@@ -3,6 +3,8 @@
 
 # C++ build
 /build/
+# Pre-fetched dependency sources (seeded to avoid re-download; machine-local)
+/.deps/
 *.o
 *.obj
 *.exe

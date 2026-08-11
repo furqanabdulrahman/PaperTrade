@@ -5,6 +5,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include "papertrade/domain/Universe.h"
 #include "papertrade/services/HttpClient.h"
 
 namespace papertrade {
@@ -12,7 +13,16 @@ namespace papertrade {
 using json = nlohmann::json;
 
 LiveMarketData::LiveMarketData() {
-    for (const auto& q : fallback_.universe()) symbols_.push_back(q.symbol);
+    for (const auto& c : universeList()) symbols_.push_back(c.symbol);
+}
+
+bool LiveMarketData::quote(const std::string& symbol, Quote& out) const {
+    std::vector<double> series;
+    if (fetchOne(symbol, out, series)) {
+        anyLive_.store(true);
+        return true;
+    }
+    return fallback_.quote(symbol, out);  // synthetic placeholder
 }
 
 const char* LiveMarketData::sourceName() const {

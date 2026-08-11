@@ -22,6 +22,7 @@ public:
                            std::vector<std::string> symbols = {});
 
     std::vector<Quote> universe() const override;
+    bool quote(const std::string& symbol, Quote& out) const override;
     std::vector<double> candles(const std::string& symbol, int n) const override;
     const char* sourceName() const override;
 

@@ -25,6 +25,15 @@ public:
     // Current snapshot of the tracked universe.
     virtual std::vector<Quote> universe() const = 0;
 
+    // Single-symbol live quote (for rate-controlled incremental refresh of a
+    // large universe). Returns false if unavailable. Default: derive from
+    // universe() so simple providers need not override.
+    virtual bool quote(const std::string& symbol, Quote& out) const {
+        for (const auto& q : universe())
+            if (q.symbol == symbol) { out = q; return true; }
+        return false;
+    }
+
     // Recent closing prices for one symbol, oldest first (up to `n`).
     virtual std::vector<double> candles(const std::string& symbol, int n) const = 0;
 

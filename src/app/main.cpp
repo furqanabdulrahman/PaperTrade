@@ -7,8 +7,10 @@
 //   Sort Lab   — all 8 Sorter<T> strategies, live comparison/move instrumentation
 //   Backtest   — DP max-profit (bestSingle / unlimited / at-most-k) with markers
 //   Graph      — StockGraph BFS + minimum spanning tree over a sector graph
-// Market data comes from a MarketDataService (synthetic today, Finnhub when the
-// SSL build is enabled). `--smoke` renders a few frames headless and exits.
+// Market data comes from a MarketDataService: keyless live quotes+candles from
+// Yahoo (default), Finnhub if FINNHUB_API_KEY is set in .env, or synthetic when
+// offline — all over WinHTTP, no OpenSSL needed. `--smoke` renders headless and
+// exits; `--probe` prints live quotes and exits.
 //
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
@@ -19,13 +21,17 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "papertrade/adt/DynamicArray.h"
 #include "papertrade/domain/AccountBook.h"
 #include "papertrade/domain/Backtest.h"
+#include "papertrade/services/FinnhubClient.h"
+#include "papertrade/services/LiveMarketData.h"
 #include "papertrade/services/SyntheticMarketData.h"
+#include "papertrade/util/Env.h"
 #include "papertrade/structures/MaxHeap.h"
 #include "papertrade/structures/MinHeap.h"
 #include "papertrade/structures/SectorTree.h"
@@ -78,7 +84,7 @@ StockGraph buildSectorGraph() {
 
 // ---- App state -------------------------------------------------------------
 struct App {
-    SyntheticMarketData market;
+    std::unique_ptr<MarketDataService> market;
     std::vector<Quote> quotes;
     AccountBook accounts;
     SectorTree sectors = buildSectorTree();
@@ -92,8 +98,9 @@ struct App {
     std::vector<int> sortSeed;
     int sortSize = 400;
 
-    App() {
-        quotes = market.universe();
+    explicit App(std::unique_ptr<MarketDataService> provider)
+        : market(std::move(provider)) {
+        quotes = market->universe();
         regenSortData();
     }
 
@@ -185,7 +192,7 @@ void tabDashboard(App& a) {
 
     ImGui::Spacing();
     symbolCombo(a);
-    const std::vector<double> series = a.market.candles(a.selectedSymbol(), 40);
+    const std::vector<double> series = a.market->candles(a.selectedSymbol(), 40);
     ImGui::SeparatorText((a.selectedSymbol() + " — 40-session close").c_str());
     if (ImPlot::BeginPlot("##dashchart", ImVec2(-1, 220))) {
         ImPlot::SetupAxes("session", "price", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
@@ -298,7 +305,7 @@ void tabSortLab(App& a) {
 
 void tabBacktest(App& a) {
     symbolCombo(a);
-    const std::vector<double> raw = a.market.candles(a.selectedSymbol(), 60);
+    const std::vector<double> raw = a.market->candles(a.selectedSymbol(), 60);
     DynamicArray<double> series;
     for (double x : raw) series.push_back(x);
 
@@ -368,7 +375,7 @@ void drawUI(App& a) {
     if (ImGui::BeginMenuBar()) {
         ImGui::TextDisabled("PaperTrade");
         ImGui::Separator();
-        ImGui::TextDisabled("data: %s", a.market.sourceName());
+        ImGui::TextDisabled("data: %s", a.market->sourceName());
         ImGui::EndMenuBar();
     }
 
@@ -387,10 +394,34 @@ void glfwError(int code, const char* desc) {
     std::fprintf(stderr, "[glfw] error %d: %s\n", code, desc);
 }
 
+// Chooses the market-data provider: Finnhub if a key is configured in .env,
+// otherwise keyless live data (Yahoo). Smoke mode stays offline (synthetic).
+std::unique_ptr<MarketDataService> makeProvider(bool offline) {
+    if (offline) return std::make_unique<SyntheticMarketData>();
+    util::Env::loadDotEnv();
+    const std::string key = util::Env::get("FINNHUB_API_KEY");
+    if (!key.empty()) return std::make_unique<FinnhubClient>(key);
+    return std::make_unique<LiveMarketData>();
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
     const bool smoke = argc > 1 && std::strcmp(argv[1], "--smoke") == 0;
+    const bool probe = argc > 1 && std::strcmp(argv[1], "--probe") == 0;
+
+    // Headless check that live data actually flows, without opening a window.
+    if (probe) {
+        auto provider = makeProvider(/*offline=*/false);
+        const auto quotes = provider->universe();
+        std::printf("source: %s\n", provider->sourceName());
+        int shown = 0;
+        for (const auto& q : quotes) {
+            std::printf("  %-6s %10.2f  %+6.2f%%\n", q.symbol.c_str(), q.last, q.pctChange);
+            if (++shown >= 6) break;
+        }
+        return 0;
+    }
 
     glfwSetErrorCallback(glfwError);
     if (!glfwInit()) {
@@ -418,7 +449,7 @@ int main(int argc, char** argv) {
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init("#version 130");
 
-    App app;
+    App app(makeProvider(smoke));
 
     int framesLeft = smoke ? 3 : -1;
     while (!glfwWindowShouldClose(window)) {

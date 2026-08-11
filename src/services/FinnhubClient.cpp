@@ -52,7 +52,8 @@ std::vector<Quote> FinnhubClient::universe() const {
 }
 
 std::vector<double> FinnhubClient::candles(const std::string& symbol, int n) const {
-    // Finnhub's candle endpoint is gated on paid plans; keep synthetic candles.
+    // Finnhub's candle endpoint is gated on paid plans, so charts use the
+    // (real) Yahoo series from the fallback provider.
     return fallback_.candles(symbol, n);
 }
 

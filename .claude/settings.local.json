@@ -33,7 +33,14 @@
       "Bash(cmake --build build --target pt_tests -j 1)",
       "Bash(ctest --output-on-failure)",
       "Bash(git add *)",
-      "Bash(git -c user.name=PaperTrade -c user.email=razantariq01@gmail.com commit -q -m ' *)"
+      "Bash(git -c user.name=PaperTrade -c user.email=razantariq01@gmail.com commit -q -m ' *)",
+      "Bash(df -h 2>&1 | grep -iE \"Filesystem|^[CD]:\" ; echo \"=== D: writable? ===\"; ls -d /d/ 2>&1 && echo \"D: exists\")",
+      "Bash(mkdir -p /d/ptdeps)",
+      "Bash(mv \"/c/Users/PMLS/Desktop/Summer Semester/DSA/Project/build/_deps/httplib-src\" /d/ptdeps/)",
+      "Bash(mv \"/c/Users/PMLS/Desktop/Summer Semester/DSA/Project/build/_deps/nlohmann_json-src\" /d/ptdeps/)",
+      "Bash(mv \"/c/Users/PMLS/Desktop/Summer Semester/DSA/Project/build/_deps/catch2-src\" /d/ptdeps/)",
+      "Bash(cmake -S 'C:/Users/PMLS/Desktop/Summer Semester/DSA/Project' -B D:/ptbuild -G 'MinGW Makefiles' -DFETCHCONTENT_SOURCE_DIR_HTTPLIB=D:/ptdeps/httplib-src -DFETCHCONTENT_SOURCE_DIR_NLOHMANN_JSON=D:/ptdeps/nlohmann_json-src -DFETCHCONTENT_SOURCE_DIR_CATCH2=D:/ptdeps/catch2-src)",
+      "Bash(cmake -S 'C:/Users/PMLS/Desktop/Summer Semester/DSA/Project' -B 'C:/Users/PMLS/Desktop/Summer Semester/DSA/Project/build' -G 'MinGW Makefiles' '-DFETCHCONTENT_SOURCE_DIR_HTTPLIB=C:/Users/PMLS/Desktop/Summer Semester/DSA/Project/.deps/httplib-src' '-DFETCHCONTENT_SOURCE_DIR_NLOHMANN_JSON=C:/Users/PMLS/Desktop/Summer Semester/DSA/Project/.deps/nlohmann_json-src' '-DFETCHCONTENT_SOURCE_DIR_CATCH2=C:/Users/PMLS/Desktop/Summer Semester/DSA/Project/.deps/catch2-src')"
     ]
   }
 }

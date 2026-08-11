@@ -11,8 +11,8 @@
 #include <string>
 #include <vector>
 
+#include "papertrade/services/LiveMarketData.h"
 #include "papertrade/services/MarketData.h"
-#include "papertrade/services/SyntheticMarketData.h"
 
 namespace papertrade {
 
@@ -31,7 +31,7 @@ public:
 private:
     std::string apiKey_;
     std::vector<std::string> symbols_;
-    SyntheticMarketData fallback_;
+    LiveMarketData fallback_;  // Yahoo: real candles + quote fallback
 };
 
 }  // namespace papertrade

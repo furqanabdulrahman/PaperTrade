@@ -135,8 +135,9 @@ endif()
 # ---------------------------------------------------------------------------
 file(GLOB_RECURSE PT_APP_SOURCES CONFIGURE_DEPENDS
      "${CMAKE_SOURCE_DIR}/src/app/*.cpp")
+find_package(Threads REQUIRED)
 add_executable(papertrade ${PT_APP_SOURCES})
-target_link_libraries(papertrade PRIVATE pt_core imgui)
+target_link_libraries(papertrade PRIVATE pt_core imgui Threads::Threads)
 
 # MinGW/Windows sockets for the cpp-httplib Finnhub client used inside pt_core.
 if(WIN32)

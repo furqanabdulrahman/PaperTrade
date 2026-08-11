@@ -137,6 +137,60 @@ TEST_CASE("Portfolio marketValue prices holdings via a lookup", "[portfolio]") {
     REQUIRE(mv == 10750.0);
 }
 
+TEST_CASE("Portfolio tracks realized P&L on sells", "[portfolio]") {
+    Portfolio p(10000.0);
+    p.buy("AAPL", 10, 100.0);           // avg cost 100
+    REQUIRE(p.realizedPnl() == 0.0);
+    p.sell("AAPL", 4, 130.0);           // booked 4*(130-100) = 120
+    REQUIRE(p.realizedPnl() == 120.0);
+    p.sell("AAPL", 6, 90.0);            // booked 6*(90-100) = -60 → net 60
+    REQUIRE(p.realizedPnl() == 60.0);
+}
+
+// --- Limit orders -----------------------------------------------------------
+TEST_CASE("Limit buy fills when price falls to the limit", "[portfolio][limit]") {
+    Portfolio p(10000.0);
+    REQUIRE(p.placeLimit("AAPL", Side::Buy, 10, 90.0).ok);
+    REQUIRE(p.pendingCount() == 1);
+
+    // Above the limit → no fill.
+    auto none = p.evaluate([](const std::string&) { return 95.0; });
+    REQUIRE(none.empty());
+    REQUIRE(p.pendingCount() == 1);
+    REQUIRE(p.position("AAPL") == nullptr);
+
+    // Drops to the limit → fills at the limit price.
+    auto filled = p.evaluate([](const std::string&) { return 88.0; });
+    REQUIRE(filled.size() == 1);
+    REQUIRE(p.pendingCount() == 0);
+    REQUIRE(p.position("AAPL")->qty == 10);
+    REQUIRE(p.position("AAPL")->avgCost == 90.0);
+    REQUIRE(p.cash() == 9100.0);  // 10 * 90
+}
+
+TEST_CASE("Limit sell fills when price rises to the limit", "[portfolio][limit]") {
+    Portfolio p(10000.0);
+    p.buy("NVDA", 5, 100.0);                       // own 5 @100
+    REQUIRE(p.placeLimit("NVDA", Side::Sell, 5, 130.0).ok);
+
+    REQUIRE(p.evaluate([](const std::string&) { return 120.0; }).empty());  // below target
+    auto filled = p.evaluate([](const std::string&) { return 131.0; });     // hits target
+    REQUIRE(filled.size() == 1);
+    REQUIRE(p.position("NVDA") == nullptr);
+    REQUIRE(p.realizedPnl() == 150.0);  // 5 * (130 - 100)
+}
+
+TEST_CASE("Pending limit orders can be cancelled", "[portfolio][limit]") {
+    Portfolio p(10000.0);
+    p.placeLimit("AAPL", Side::Buy, 10, 90.0);
+    const long id = p.pendingAt(0).id;
+    REQUIRE(p.cancelPending(id));
+    REQUIRE(p.pendingCount() == 0);
+    REQUIRE_FALSE(p.cancelPending(id));  // already gone
+    // A cancelled order never fills.
+    REQUIRE(p.evaluate([](const std::string&) { return 1.0; }).empty());
+}
+
 // --- AccountBook multi-tenancy ----------------------------------------------
 TEST_CASE("AccountBook isolates portfolios per user", "[accounts]") {
     AccountBook book;

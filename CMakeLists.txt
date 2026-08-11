@@ -122,6 +122,21 @@ else()
   target_link_libraries(pt_core INTERFACE nlohmann_json::nlohmann_json)
 endif()
 
+# Finnhub live data (Phase 4) is opt-in: it needs cpp-httplib over OpenSSL, which
+# in turn needs the 64-bit toolchain. OFF by default → FinnhubClient falls back
+# to the synthetic feed and the whole project builds with no OpenSSL present.
+# Enable with: cmake -B build ... -DPAPERTRADE_ENABLE_SSL=ON
+option(PAPERTRADE_ENABLE_SSL "Enable Finnhub HTTPS via OpenSSL" OFF)
+if(PAPERTRADE_ENABLE_SSL)
+  find_package(OpenSSL REQUIRED)
+  target_compile_definitions(pt_core PUBLIC PAPERTRADE_ENABLE_SSL CPPHTTPLIB_OPENSSL_SUPPORT)
+  target_link_libraries(pt_core PUBLIC httplib::httplib OpenSSL::SSL OpenSSL::Crypto)
+  if(WIN32)
+    target_link_libraries(pt_core PUBLIC ws2_32 crypt32)
+  endif()
+  message(STATUS "PaperTrade: Finnhub HTTPS ENABLED")
+endif()
+
 # ---------------------------------------------------------------------------
 # Desktop application executable — Dear ImGui GUI built on top of pt_core.
 # All UI sources live under src/app/; the entrypoint is src/app/main.cpp.

@@ -423,6 +423,12 @@ int main(int argc, char** argv) {
         return 0;
     }
 
+    // Build the app (and fetch live quotes) BEFORE opening the window, so the
+    // window appears already populated instead of blank for a few seconds.
+    std::printf("PaperTrade: loading market data...\n");
+    App app(makeProvider(smoke));
+    std::printf("PaperTrade: data source = %s\n", app.market->sourceName());
+
     glfwSetErrorCallback(glfwError);
     if (!glfwInit()) {
         std::fprintf(stderr, "Failed to initialise GLFW\n");
@@ -448,8 +454,6 @@ int main(int argc, char** argv) {
     ImGui::StyleColorsDark();
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init("#version 130");
-
-    App app(makeProvider(smoke));
 
     int framesLeft = smoke ? 3 : -1;
     while (!glfwWindowShouldClose(window)) {

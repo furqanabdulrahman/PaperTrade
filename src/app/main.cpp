@@ -40,6 +40,7 @@
 #include "papertrade/domain/Universe.h"
 #include "papertrade/services/FinnhubClient.h"
 #include "papertrade/services/LiveMarketData.h"
+#include "papertrade/services/Persistence.h"
 #include "papertrade/services/SyntheticMarketData.h"
 #include "papertrade/structures/MaxHeap.h"
 #include "papertrade/structures/MinHeap.h"
@@ -58,6 +59,9 @@ const ImVec4 kGreen(0.24f, 0.78f, 0.44f, 1.0f);
 const ImVec4 kRed(0.94f, 0.38f, 0.38f, 1.0f);
 const ImVec4 kMuted(0.60f, 0.63f, 0.69f, 1.0f);
 ImVec4 pnlColor(double v) { return v >= 0 ? kGreen : kRed; }
+
+// Where per-user account state is saved between sessions (git-ignored).
+const char* kStatePath = "data/state/portfolio.json";
 
 const char* nameOf(const std::string& sym) {
     for (const auto& c : universeList()) if (sym == c.symbol) return c.name;
@@ -126,11 +130,15 @@ struct App {
         quotes = seed.universe();                 // aligned to universe order
         for (int i = 0; i < static_cast<int>(symbols.size()); ++i)
             symIndex.insert(symbols[i], i);
+        loadPortfolio(accounts.portfolio(user), kStatePath);  // resume saved account
     }
     ~App() {
         running.store(false);
         if (refreshThread.joinable()) refreshThread.join();
+        saveState();  // final save on exit
     }
+
+    void saveState() { savePortfolio(accounts.portfolio(user), kStatePath); }
 
     void startRefresh() {
         refreshThread = std::thread([this] {
@@ -166,6 +174,7 @@ struct App {
                           toString(o.side), o.qty, o.ticker.c_str(), o.price);
             events.insert(events.begin(), b);
         }
+        if (!filled.empty()) saveState();  // persist auto-executed fills
     }
 
     double priceOf(const std::string& sym) const {
@@ -393,6 +402,7 @@ void orderTicket(App& a) {
             std::snprintf(b, sizeof(b), "%s %s %d %s%s", r.message.c_str(), toString(side),
                           a.tradeQty, sym.c_str(), a.orderTypeIdx == 1 ? " (resting)" : "");
             a.events.insert(a.events.begin(), b);
+            a.saveState();
         }
     }
     if (!a.tradeMsg.empty()) ImGui::TextColored(kMuted, "%s", a.tradeMsg.c_str());
@@ -448,7 +458,7 @@ void openOrdersTable(App& a) {
             ImGui::PopID();
         }
         ImGui::EndTable();
-        if (cancelId >= 0) pf.cancelPending(cancelId);
+        if (cancelId >= 0) { pf.cancelPending(cancelId); a.saveState(); }
     }
 }
 
@@ -480,7 +490,7 @@ void tabTrade(App& a) {
     symbolCombo(a);
     orderTicket(a);
     if (ImGui::Button("Undo last trade")) {
-        if (a.accounts.portfolio(a.user).undoLast()) a.tradeMsg = "Undid last trade";
+        if (a.accounts.portfolio(a.user).undoLast()) { a.tradeMsg = "Undid last trade"; a.saveState(); }
     }
     ImGui::NextColumn();
     ImGui::SeparatorText("Open orders");

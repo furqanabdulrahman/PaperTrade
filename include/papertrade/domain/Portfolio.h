@@ -132,6 +132,44 @@ public:
         return true;
     }
 
+    // --- Persistence snapshot ----------------------------------------------
+    // A flat, serializable view of the whole portfolio. The persistence layer
+    // converts this to/from JSON; Portfolio itself stays free of any I/O deps.
+    struct Snapshot {
+        double cash = 100000.0;
+        double realizedPnl = 0.0;
+        long nextId = 1;
+        std::vector<std::pair<std::string, Position>> holdings;
+        std::vector<Order> history;
+        std::vector<PendingOrder> pending;
+    };
+
+    Snapshot snapshot() const {
+        Snapshot s;
+        s.cash = cash_;
+        s.realizedPnl = realizedPnl_;
+        s.nextId = nextId_;
+        holdings_.forEach([&](const std::string& k, const Position& p) {
+            s.holdings.push_back({k, p});
+        });
+        for (std::size_t i = 0; i < history_.size(); ++i) s.history.push_back(history_[i]);
+        for (std::size_t i = 0; i < pending_.size(); ++i) s.pending.push_back(pending_[i]);
+        return s;
+    }
+
+    void restore(const Snapshot& s) {
+        holdings_ = SeparateChainingHashTable<std::string, Position>();
+        history_ = DynamicArray<Order>();
+        pending_ = DynamicArray<PendingOrder>();
+        undo_ = OrderStack<UndoRecord>();  // cross-session undo is not persisted
+        cash_ = s.cash;
+        realizedPnl_ = s.realizedPnl;
+        nextId_ = s.nextId;
+        for (const auto& kv : s.holdings) holdings_.put(kv.first, kv.second);
+        for (const auto& o : s.history) history_.push_back(o);
+        for (const auto& po : s.pending) pending_.push_back(po);
+    }
+
     // cash + marketed value of every holding, priced by `price(ticker)`.
     template <typename PriceFn>
     double marketValue(PriceFn price) const {

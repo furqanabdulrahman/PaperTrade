@@ -76,8 +76,17 @@ public:
         }
         return *this;
     }
-    SeparateChainingHashTable(SeparateChainingHashTable&&) noexcept = default;
-    SeparateChainingHashTable& operator=(SeparateChainingHashTable&&) noexcept = default;
+    // Swap-based moves: a defaulted move would leave the source with a stale
+    // bucketCount_ but an emptied bucket array, and its destructor would then
+    // walk a null buffer. Swapping keeps both objects internally consistent.
+    SeparateChainingHashTable(SeparateChainingHashTable&& o) noexcept { swapWith(o); }
+    SeparateChainingHashTable& operator=(SeparateChainingHashTable&& o) noexcept {
+        if (this != &o) {
+            clear();
+            swapWith(o);
+        }
+        return *this;
+    }
 
     void put(const K& key, const V& value) override {
         Node* n = findNode(key);
@@ -167,6 +176,12 @@ private:
         Node(const K& k, const V& v) : key(k), value(v) {}
         explicit Node(const K& k) : key(k), value() {}  // for getOrCreate
     };
+
+    void swapWith(SeparateChainingHashTable& o) noexcept {
+        std::swap(buckets_, o.buckets_);
+        std::swap(bucketCount_, o.bucketCount_);
+        std::swap(size_, o.size_);
+    }
 
     void initBuckets(std::size_t requested) {
         std::size_t n = 1;

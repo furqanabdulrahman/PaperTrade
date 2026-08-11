@@ -1,0 +1,34 @@
+# Secrets
+.env
+
+# C++ build
+/build/
+*.o
+*.obj
+*.exe
+*.dll
+*.a
+*.lib
+
+# Runtime state (per-user sessions are generated at runtime)
+/data/state/*.json
+!/data/state/.gitkeep
+
+# Node / Vite
+web/node_modules/
+web/dist/
+web/.vite/
+npm-debug.log*
+
+# Editor / OS
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# CMake local
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+_deps/

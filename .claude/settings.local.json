@@ -1,0 +1,39 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(git -C \"C:/Users/PMLS/Desktop/Summer Semester/DSA/Project\" status)",
+      "Bash(g++ --version)",
+      "Bash(clang++ --version)",
+      "Bash(cl)",
+      "Bash(cmake --version)",
+      "Bash(npm --version)",
+      "Bash(git --version)",
+      "Bash(mkdir -p include/papertrade/adt include/papertrade/structures include/papertrade/domain include/papertrade/services include/papertrade/api include/papertrade/util)",
+      "Bash(mkdir -p src/services src/api)",
+      "Bash(mkdir -p tests)",
+      "Bash(mkdir -p data/historical_cache data/state)",
+      "Bash(mkdir -p docs)",
+      "Bash(git init *)",
+      "Bash(git config *)",
+      "Bash(cmake -S . -B build -G \"MinGW Makefiles\" -DCMAKE_BUILD_TYPE=Release)",
+      "Bash(cmake --build build --target papertrade -j 4)",
+      "Bash(./build/bin/papertrade.exe)",
+      "Bash(curl -s http://localhost:8080/health)",
+      "Read(//tmp/**)",
+      "Bash(kill %1)",
+      "Bash(npm install *)",
+      "Bash(npm run *)",
+      "Bash(curl -s http://localhost:8080/)",
+      "Bash(curl -s -o /dev/null -w \"status=%{http_code}\\\\n\" http://localhost:8080/portfolio)",
+      "Bash(taskkill //F //IM papertrade.exe)",
+      "Bash(cmake --build build --target pt_tests -j 4)",
+      "Bash(rm -rf nlohmann_json-src/.git catch2-src/.git httplib-src/.git)",
+      "Bash(rm -rf nlohmann_json-src/docs nlohmann_json-src/tests)",
+      "Bash(cmake -S . -B build -G \"MinGW Makefiles\")",
+      "Bash(cmake --build build --target pt_tests -j 1)",
+      "Bash(ctest --output-on-failure)",
+      "Bash(git add *)",
+      "Bash(git -c user.name=PaperTrade -c user.email=razantariq01@gmail.com commit -q -m ' *)"
+    ]
+  }
+}

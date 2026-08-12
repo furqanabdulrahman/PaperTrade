@@ -345,38 +345,85 @@ void setupTimeTicks(const std::vector<double>& times, const char* fmt, int maxTi
     ImPlot::SetupAxisTicks(ImAxis_X1, pos.data(), static_cast<int>(pos.size()), cptr.data());
 }
 
-// Green/red candlesticks, drawn on the plot's draw list. `fmt` controls the
-// X-axis label style for the selected range.
+// Dark trading-terminal chart styling (glow-friendly bg, subtle grid).
+void pushProChart() {
+    ImPlot::PushStyleColor(ImPlotCol_FrameBg, IM_COL32(12, 16, 21, 255));
+    ImPlot::PushStyleColor(ImPlotCol_PlotBg, IM_COL32(9, 13, 18, 255));
+    ImPlot::PushStyleColor(ImPlotCol_PlotBorder, IM_COL32(0, 0, 0, 0));
+    ImPlot::PushStyleColor(ImPlotCol_AxisText, IM_COL32(140, 152, 168, 255));
+    ImPlot::PushStyleColor(ImPlotCol_AxisGrid, IM_COL32(38, 48, 62, 110));
+    ImPlot::PushStyleVar(ImPlotStyleVar_PlotPadding, ImVec2(10, 8));
+    ImPlot::PushStyleVar(ImPlotStyleVar_MajorGridSize, ImVec2(1.0f, 1.0f));
+}
+void popProChart() { ImPlot::PopStyleColor(5); ImPlot::PopStyleVar(2); }
+
+// A neon line: a wide translucent pass under a thin bright one.
+void glowLine(const char* id, const double* xs, const double* ys, int n, ImVec4 color) {
+    ImVec4 glow = color; glow.w = 0.16f;
+    ImPlot::SetNextLineStyle(glow, 6.0f);
+    ImPlot::PlotLine(id, xs, ys, n);
+    ImVec4 bright = color; bright.w = 0.95f;
+    ImPlot::SetNextLineStyle(bright, 1.9f);
+    ImPlot::PlotLine(id, xs, ys, n);
+}
+
+// Green/red candlesticks with a moving-average overlay and a current-price tag.
 void plotCandles(const std::vector<Bar>& bars, const char* fmt) {
     if (bars.empty()) { ImGui::TextColored(kMuted, "No chart data."); return; }
     double ymin = 1e18, ymax = -1e18;
     for (const auto& b : bars) { if (b.low < ymin) ymin = b.low; if (b.high > ymax) ymax = b.high; }
-    const double pad = (ymax - ymin) * 0.06 + 1e-6;
+    const double pad = (ymax - ymin) * 0.08 + 1e-6;
     const double w = bars.size() > 1 ? (bars[1].time - bars[0].time) * 0.34 : 20000.0;
 
-    if (ImPlot::BeginPlot("##candles", ImVec2(-1, 250), ImPlotFlags_NoLegend)) {
-        ImPlot::SetupAxes(nullptr, "price", 0, 0);
+    pushProChart();
+    if (ImPlot::BeginPlot("##candles", ImVec2(-1, 260), ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText)) {
+        ImPlot::SetupAxes(nullptr, "price", ImPlotAxisFlags_NoGridLines, 0);
         ImPlot::SetupAxisLimits(ImAxis_X1, bars.front().time - w * 2, bars.back().time + w * 2, ImPlotCond_Always);
         ImPlot::SetupAxisLimits(ImAxis_Y1, ymin - pad, ymax + pad, ImPlotCond_Always);
         std::vector<double> ts;
         for (const auto& b : bars) ts.push_back(b.time);
         setupTimeTicks(ts, fmt, 6);
         ImDrawList* dl = ImPlot::GetPlotDrawList();
-        const ImU32 up = IM_COL32(62, 207, 142, 255), down = IM_COL32(230, 90, 90, 255);
+        const ImU32 up = IM_COL32(38, 208, 124, 255), down = IM_COL32(246, 70, 93, 255);
         for (const auto& b : bars) {
             const ImU32 col = b.close >= b.open ? up : down;
             const ImVec2 wl = ImPlot::PlotToPixels(b.time, b.low);
             const ImVec2 wh = ImPlot::PlotToPixels(b.time, b.high);
             const ImVec2 bl = ImPlot::PlotToPixels(b.time - w, b.open);
             const ImVec2 br = ImPlot::PlotToPixels(b.time + w, b.close);
-            dl->AddLine(wl, wh, col, 1.6f);  // high-low wick
+            dl->AddLine(wl, wh, col, 1.2f);  // high-low wick
             float top = bl.y < br.y ? bl.y : br.y;
             float bot = bl.y < br.y ? br.y : bl.y;
-            if (bot - top < 1.0f) bot = top + 1.0f;  // keep flat days visible
-            dl->AddRectFilled(ImVec2(bl.x, top), ImVec2(br.x, bot), col);
+            if (bot - top < 1.5f) bot = top + 1.5f;  // keep flat days visible
+            dl->AddRectFilled(ImVec2(bl.x, top), ImVec2(br.x, bot), col, 1.0f);
         }
+        // Moving-average overlay (glowing gold line).
+        const int period = std::max(2, std::min(20, static_cast<int>(bars.size()) / 4));
+        if (static_cast<int>(bars.size()) > period) {
+            std::vector<double> mx, my;
+            for (int i = period - 1; i < static_cast<int>(bars.size()); ++i) {
+                double s = 0;
+                for (int k = 0; k < period; ++k) s += bars[i - k].close;
+                mx.push_back(bars[i].time);
+                my.push_back(s / period);
+            }
+            glowLine("ma", mx.data(), my.data(), static_cast<int>(mx.size()),
+                     ImVec4(0.96f, 0.80f, 0.35f, 1));
+        }
+        // Current-price line + price tag on the right edge.
+        const ImVec2 pp = ImPlot::GetPlotPos(), ps = ImPlot::GetPlotSize();
+        const float y = ImPlot::PlotToPixels(bars.back().time, bars.back().close).y;
+        const ImU32 lc = bars.back().close >= bars.back().open ? up : down;
+        dl->AddLine(ImVec2(pp.x, y), ImVec2(pp.x + ps.x, y), IM_COL32(200, 210, 225, 45), 1.0f);
+        char buf[24];
+        std::snprintf(buf, sizeof(buf), "%.2f", bars.back().close);
+        const ImVec2 tsz = ImGui::CalcTextSize(buf);
+        dl->AddRectFilled(ImVec2(pp.x + ps.x - tsz.x - 12, y - 10),
+                          ImVec2(pp.x + ps.x - 2, y + 10), lc, 3.0f);
+        dl->AddText(ImVec2(pp.x + ps.x - tsz.x - 7, y - 8), IM_COL32(8, 12, 16, 255), buf);
         ImPlot::EndPlot();
     }
+    popProChart();
 }
 
 void stockDetail(App& a) {
@@ -431,6 +478,7 @@ void stockDetail(App& a) {
 }
 
 void tabMarkets(App& a) {
+    ImGui::BeginChild("mktscroll", ImVec2(0, 0), false);
     ImGui::SetNextItemWidth(280);
     ImGui::InputTextWithHint("##search", "Search symbol or company...", a.search, sizeof(a.search));
     ImGui::SameLine();
@@ -447,6 +495,7 @@ void tabMarkets(App& a) {
 
     ImGui::SeparatorText("Details");
     stockDetail(a);
+    ImGui::EndChild();
 }
 
 // ---- Trade -----------------------------------------------------------------
@@ -665,17 +714,28 @@ void portfolioTracker(App& a) {
     ImGui::Text("Portfolio value  %.2f", last);
     ImGui::SameLine();
     ImGui::TextColored(col, "   %+.2f (%+.2f%%) this session", chg, pct);
-    if (ImPlot::BeginPlot("##track", ImVec2(-1, 230), ImPlotFlags_NoLegend)) {
-        ImPlot::SetupAxes(nullptr, "value", 0, ImPlotAxisFlags_AutoFit);
+    pushProChart();
+    if (ImPlot::BeginPlot("##track", ImVec2(-1, 240), ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText)) {
+        ImPlot::SetupAxes(nullptr, "value", ImPlotAxisFlags_NoGridLines, 0);
+        double lo = 1e18, hi = -1e18;
+        for (double v : a.eqVals) { if (v < lo) lo = v; if (v > hi) hi = v; }
+        const double vp = (hi - lo) * 0.18 + 1.0;
         ImPlot::SetupAxisLimits(ImAxis_X1, a.eqTimes.front(), a.eqTimes.back(), ImPlotCond_Always);
+        ImPlot::SetupAxisLimits(ImAxis_Y1, lo - vp, hi + vp, ImPlotCond_Always);
         setupTimeTicks(a.eqTimes, "%H:%M", 6);
         const int n = static_cast<int>(a.eqVals.size());
+        // Neon area fill down to the axis floor.
         ImPlot::SetNextFillStyle(col, 0.12f);
-        ImPlot::PlotShaded("value", a.eqTimes.data(), a.eqVals.data(), n, first);
-        ImPlot::SetNextLineStyle(col, 2.2f);
-        ImPlot::PlotLine("value", a.eqTimes.data(), a.eqVals.data(), n);
+        ImPlot::PlotShaded("value", a.eqTimes.data(), a.eqVals.data(), n, lo - vp);
+        // Dashed session-start baseline so up/down reads instantly.
+        ImDrawList* dl = ImPlot::GetPlotDrawList();
+        const ImVec2 pp = ImPlot::GetPlotPos(), ps = ImPlot::GetPlotSize();
+        const float by = ImPlot::PlotToPixels(a.eqTimes.front(), first).y;
+        dl->AddLine(ImVec2(pp.x, by), ImVec2(pp.x + ps.x, by), IM_COL32(150, 160, 175, 55), 1.0f);
+        glowLine("value", a.eqTimes.data(), a.eqVals.data(), n, col);
         ImPlot::EndPlot();
     }
+    popProChart();
 }
 
 void tabPortfolio(App& a) {

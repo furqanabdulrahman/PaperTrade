@@ -398,23 +398,50 @@ int volAxisFmt(double v, char* buf, int size, void*) {
     return std::snprintf(buf, size, "%.0f", v);
 }
 
+// Keep a chart's [mn,mx] view inside the data's real span (+small margin) and
+// within sane zoom limits — so the user can never pan/zoom into empty space.
+void clampView(double& mn, double& mx, double first, double last, double minSpan) {
+    const double margin = (last - first) * 0.02 + minSpan;
+    const double lo = first - margin, hi = last + margin, full = hi - lo;
+    double span = mx - mn;
+    if (span > full) span = full;
+    if (span < minSpan) span = minSpan;
+    if (mn < lo) mn = lo;
+    if (mn + span > hi) mn = hi - span;
+    mx = mn + span;
+}
+
+// Zoom a linked X range about its centre (factor < 1 zooms in).
+void zoomX(double& mn, double& mx, double factor) {
+    const double c = (mn + mx) * 0.5, s = (mx - mn) * factor * 0.5;
+    mn = c - s;
+    mx = c + s;
+}
+
 // Professional price chart: candlesticks + toggleable MAs on a zoomable/pannable
 // time axis, a linked volume panel below, and an interactive crosshair.
-void drawStockChart(App& a, const std::vector<Bar>& bars) {
+void drawStockChart(App& a, const std::vector<Bar>& bars, bool intraday) {
     if (bars.size() < 2) { ImGui::TextColored(kMuted, "Not enough chart data for this range."); return; }
-    double ymin = 1e18, ymax = -1e18, vmax = 0;
-    for (const auto& b : bars) {
-        if (b.low < ymin) ymin = b.low;
-        if (b.high > ymax) ymax = b.high;
-        if (b.volume > vmax) vmax = b.volume;
-    }
-    const double padY = (ymax - ymin) * 0.08 + 1e-6;
     const double bw = bars[1].time - bars[0].time;  // bar spacing (seconds)
     const double w = bw * 0.34;                       // candle half-width
 
     const bool refit = a.chartRefit;
     a.chartRefit = false;
     if (refit) { a.sxMin = bars.front().time - bw; a.sxMax = bars.back().time + bw; }
+    // Constrain the view to the real data (no zooming/panning into empty space).
+    clampView(a.sxMin, a.sxMax, bars.front().time, bars.back().time, bw * 5.0);
+
+    // Auto-scale Y to the candles currently VISIBLE, so they always fill the
+    // panel and can never be lost when zooming/panning horizontally.
+    double vlo = 1e18, vhi = -1e18, vvmax = 0;
+    for (const auto& b : bars)
+        if (b.time >= a.sxMin && b.time <= a.sxMax) {
+            if (b.low < vlo) vlo = b.low;
+            if (b.high > vhi) vhi = b.high;
+            if (b.volume > vvmax) vvmax = b.volume;
+        }
+    if (vlo > vhi) { vlo = bars.back().low; vhi = bars.back().high; vvmax = bars.back().volume; }
+    const double padY = (vhi - vlo) * 0.10 + 1e-6;
 
     const float availY = ImGui::GetContentRegionAvail().y;
     const float volH = 72.0f;
@@ -425,13 +452,13 @@ void drawStockChart(App& a, const std::vector<Bar>& bars) {
     const ImU32 up = IM_COL32(38, 208, 124, 255), down = IM_COL32(246, 70, 93, 255);
     pushProChart();
 
-    // -------- price panel (zoom + pan) --------
+    // -------- price panel (horizontal zoom; Y follows the visible candles) --------
     if (ImPlot::BeginPlot("##price", ImVec2(-1, priceH), ImPlotFlags_Crosshairs)) {
         ImPlot::SetupAxis(ImAxis_X1, nullptr, ImPlotAxisFlags_NoTickLabels);
         ImPlot::SetupAxisScale(ImAxis_X1, ImPlotScale_Time);
         ImPlot::SetupAxisLinks(ImAxis_X1, &a.sxMin, &a.sxMax);
-        ImPlot::SetupAxis(ImAxis_Y1, nullptr, ImPlotAxisFlags_Opposite);
-        ImPlot::SetupAxisLimits(ImAxis_Y1, ymin - padY, ymax + padY, refit ? ImPlotCond_Always : ImPlotCond_Once);
+        ImPlot::SetupAxis(ImAxis_Y1, nullptr, ImPlotAxisFlags_Opposite | ImPlotAxisFlags_Lock);
+        ImPlot::SetupAxisLimits(ImAxis_Y1, vlo - padY, vhi + padY, ImPlotCond_Always);
         ImPlot::SetupLegend(ImPlotLocation_NorthWest, ImPlotLegendFlags_Horizontal);
 
         ImDrawList* dl = ImPlot::GetPlotDrawList();
@@ -491,8 +518,10 @@ void drawStockChart(App& a, const std::vector<Bar>& bars) {
                 if (d < best) { best = d; idx = i; }
             }
             const Bar& bb = bars[idx];
+            const char* dfmt = intraday ? "%a %b %d, %Y  %H:%M" : "%a, %b %d %Y";
             ImGui::BeginTooltip();
-            ImGui::TextDisabled("%s    %.2f", formatEpoch(m.x, "%a %b %d, %Y  %H:%M").c_str(), m.y);
+            ImGui::TextUnformatted(formatEpoch(bb.time, dfmt).c_str());
+            ImGui::TextDisabled("cursor  %.2f", m.y);
             ImGui::Separator();
             ImGui::Text("O  %.2f", bb.open);
             ImGui::Text("H  %.2f", bb.high);
@@ -508,8 +537,8 @@ void drawStockChart(App& a, const std::vector<Bar>& bars) {
     if (ImPlot::BeginPlot("##vol", ImVec2(-1, volH), ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText)) {
         ImPlot::SetupAxisScale(ImAxis_X1, ImPlotScale_Time);
         ImPlot::SetupAxisLinks(ImAxis_X1, &a.sxMin, &a.sxMax);
-        ImPlot::SetupAxis(ImAxis_Y1, nullptr, ImPlotAxisFlags_Opposite);
-        ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, vmax * 1.15 + 1.0, ImPlotCond_Always);
+        ImPlot::SetupAxis(ImAxis_Y1, nullptr, ImPlotAxisFlags_Opposite | ImPlotAxisFlags_Lock);
+        ImPlot::SetupAxisLimits(ImAxis_Y1, 0.0, vvmax * 1.15 + 1.0, ImPlotCond_Always);
         ImPlot::SetupAxisFormat(ImAxis_Y1, volAxisFmt);
         ImDrawList* dl = ImPlot::GetPlotDrawList();
         ImPlot::PushPlotClipRect();
@@ -551,6 +580,11 @@ void stockDetail(App& a) {
     ImGui::SameLine(); ImGui::Checkbox("20", &a.ma20);
     ImGui::SameLine(); ImGui::Checkbox("50", &a.ma50);
     ImGui::SameLine(); ImGui::Checkbox("200", &a.ma200);
+    ImGui::SameLine(); ImGui::TextDisabled(" |");
+    ImGui::SameLine(); if (ImGui::SmallButton("-")) zoomX(a.sxMin, a.sxMax, 1.30);   // zoom out
+    ImGui::SameLine(); if (ImGui::SmallButton("+")) zoomX(a.sxMin, a.sxMax, 0.77);   // zoom in
+    ImGui::SameLine(); if (ImGui::SmallButton("Fit")) a.chartRefit = true;
+    ImGui::SameLine(); ImGui::TextDisabled("scroll = zoom · drag = pan");
 
     // Fetch+cache OHLC bars for this symbol & range (one network call per key);
     // a changed key (new symbol or range) refits the chart view.
@@ -561,7 +595,7 @@ void stockDetail(App& a) {
     if (it == a.barCache.end())
         it = a.barCache.emplace(key, a.market->bars(sym, rrange[a.rangeIdx], rint[a.rangeIdx])).first;
     const std::vector<Bar>& bars = it->second;
-    drawStockChart(a, bars);
+    drawStockChart(a, bars, a.rangeIdx <= 1);  // 1D / 1W are intraday
 
     // Related stocks (graph neighbours).
     ImGui::TextColored(kMuted, "Related:");
@@ -853,16 +887,19 @@ void portfolioTracker(App& a) {
     const bool refit = a.trackRefit;
     a.trackRefit = false;
     if (refit) { a.pxMin = ft.front(); a.pxMax = ft.back(); }
+    clampView(a.pxMin, a.pxMax, ft.front(), ft.back(), 60.0);
     double lo = 1e18, hi = -1e18;
-    for (double v : fv) { if (v < lo) lo = v; if (v > hi) hi = v; }
+    for (std::size_t i = 0; i < fv.size(); ++i)
+        if (ft[i] >= a.pxMin && ft[i] <= a.pxMax) { if (fv[i] < lo) lo = fv[i]; if (fv[i] > hi) hi = fv[i]; }
+    if (lo > hi) { lo = fv.back(); hi = fv.back(); }
     const double vp = (hi - lo) * 0.15 + 1.0;
 
     pushProChart();
     if (ImPlot::BeginPlot("##pf", ImVec2(-1, 260), ImPlotFlags_Crosshairs)) {
         ImPlot::SetupAxisScale(ImAxis_X1, ImPlotScale_Time);
         ImPlot::SetupAxisLinks(ImAxis_X1, &a.pxMin, &a.pxMax);
-        ImPlot::SetupAxis(ImAxis_Y1, nullptr, ImPlotAxisFlags_Opposite);
-        ImPlot::SetupAxisLimits(ImAxis_Y1, lo - vp, hi + vp, refit ? ImPlotCond_Always : ImPlotCond_Once);
+        ImPlot::SetupAxis(ImAxis_Y1, nullptr, ImPlotAxisFlags_Opposite | ImPlotAxisFlags_Lock);
+        ImPlot::SetupAxisLimits(ImAxis_Y1, lo - vp, hi + vp, ImPlotCond_Always);
         const int n = static_cast<int>(fv.size());
         ImPlot::SetNextFillStyle(col, 0.10f);
         ImPlot::PlotShaded("##fill", ft.data(), fv.data(), n, lo - vp);

@@ -66,7 +66,5 @@ Backing store for everything is a hand-built `DynamicArray<T>` (rule-of-five). *
 - **Desktop GUI** — Dear ImGui + GLFW/OpenGL, ImPlot for charts
 - **Data services** — WinHTTP (native TLS, no OpenSSL) → Finnhub / Yahoo, synthetic fallback
 
-## Authors
-
-- **Furqan Abdul Rahman** — CMS 522209
-- **Hina Maryam** — CMS 502680
+## Author
+**Furqan Abdul Rahman**

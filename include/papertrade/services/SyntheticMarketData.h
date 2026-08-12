@@ -6,6 +6,7 @@
 // random-walk so quotes and candles are reproducible.
 //
 #include <cstdint>
+#include <ctime>
 #include <string>
 #include <vector>
 
@@ -49,6 +50,30 @@ public:
             price *= (1.0 + r * 0.04);
             if (price < 1.0) price = 1.0;
             out.push_back(price);
+        }
+        return out;
+    }
+
+    std::vector<Bar> bars(const std::string& symbol, const std::string& range) const override {
+        const int n = range == "5d" ? 5 : range == "1mo" ? 22 : range == "3mo" ? 66 : 252;
+        std::vector<double> closes = candles(symbol, n);
+        std::vector<Bar> out;
+        const double now = static_cast<double>(std::time(nullptr));
+        std::uint64_t s = seedFor(symbol) ^ 0x9E3779B97F4A7C15ULL;
+        double prev = closes.empty() ? baseFor(symbol) : closes.front();
+        for (int i = 0; i < static_cast<int>(closes.size()); ++i) {
+            const double close = closes[i];
+            const double open = prev;
+            s = s * 6364136223846793005ULL + 1442695040888963407ULL;
+            const double wig = (((s >> 33) & 0xFFFF) / 65535.0) * 0.015 + 0.003;
+            Bar b;
+            b.time = now - static_cast<double>(closes.size() - 1 - i) * 86400.0;
+            b.open = open;
+            b.close = close;
+            b.high = (open > close ? open : close) * (1.0 + wig);
+            b.low = (open < close ? open : close) * (1.0 - wig);
+            out.push_back(b);
+            prev = close;
         }
         return out;
     }

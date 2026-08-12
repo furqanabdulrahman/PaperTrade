@@ -115,6 +115,8 @@ struct App {
     std::vector<std::string> events;
     char search[64] = "";
     std::vector<std::string> watch;
+    int rangeIdx = 2;  // 0=1W 1=1M 2=3M 3=1Y
+    std::map<std::string, std::vector<Bar>> barCache;
 
     std::mutex mtx;
     std::vector<Quote> incoming;
@@ -253,7 +255,7 @@ void marketBoard(App& a) {
     const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders |
                                   ImGuiTableFlags_Sortable | ImGuiTableFlags_ScrollY |
                                   ImGuiTableFlags_SizingStretchProp;
-    if (ImGui::BeginTable("board", 5, flags, ImVec2(0, 340))) {
+    if (ImGui::BeginTable("board", 5, flags, ImVec2(0, 230))) {
         ImGui::TableSetupColumn("Symbol", ImGuiTableColumnFlags_DefaultSort);
         ImGui::TableSetupColumn("Company");
         ImGui::TableSetupColumn("Last");
@@ -303,6 +305,37 @@ void marketBoard(App& a) {
     }
 }
 
+// Green/red candlesticks with a real date axis, drawn on the plot's draw list.
+void plotCandles(const std::vector<Bar>& bars) {
+    if (bars.empty()) { ImGui::TextColored(kMuted, "No chart data."); return; }
+    double ymin = 1e18, ymax = -1e18;
+    for (const auto& b : bars) { if (b.low < ymin) ymin = b.low; if (b.high > ymax) ymax = b.high; }
+    const double pad = (ymax - ymin) * 0.06 + 1e-6;
+    const double w = bars.size() > 1 ? (bars[1].time - bars[0].time) * 0.34 : 20000.0;
+
+    if (ImPlot::BeginPlot("##candles", ImVec2(-1, 250), ImPlotFlags_NoLegend)) {
+        ImPlot::SetupAxes(nullptr, "price", 0, 0);
+        ImPlot::SetupAxisScale(ImAxis_X1, ImPlotScale_Time);  // real dates on X
+        ImPlot::SetupAxisLimits(ImAxis_X1, bars.front().time - w * 2, bars.back().time + w * 2, ImPlotCond_Always);
+        ImPlot::SetupAxisLimits(ImAxis_Y1, ymin - pad, ymax + pad, ImPlotCond_Always);
+        ImDrawList* dl = ImPlot::GetPlotDrawList();
+        const ImU32 up = IM_COL32(62, 207, 142, 255), down = IM_COL32(230, 90, 90, 255);
+        for (const auto& b : bars) {
+            const ImU32 col = b.close >= b.open ? up : down;
+            const ImVec2 wl = ImPlot::PlotToPixels(b.time, b.low);
+            const ImVec2 wh = ImPlot::PlotToPixels(b.time, b.high);
+            const ImVec2 bl = ImPlot::PlotToPixels(b.time - w, b.open);
+            const ImVec2 br = ImPlot::PlotToPixels(b.time + w, b.close);
+            dl->AddLine(wl, wh, col, 1.6f);  // high-low wick
+            float top = bl.y < br.y ? bl.y : br.y;
+            float bot = bl.y < br.y ? br.y : bl.y;
+            if (bot - top < 1.0f) bot = top + 1.0f;  // keep flat days visible
+            dl->AddRectFilled(ImVec2(bl.x, top), ImVec2(br.x, bot), col);
+        }
+        ImPlot::EndPlot();
+    }
+}
+
 void stockDetail(App& a) {
     const std::string sym = a.selectedSymbol();
     ImGui::Text("%s", sym.c_str());
@@ -311,12 +344,24 @@ void stockDetail(App& a) {
     ImGui::SameLine();
     ImGui::Text("   %.2f", a.priceOf(sym));
 
-    const std::vector<double> series = a.market->candles(sym, 60);
-    if (ImPlot::BeginPlot("##detchart", ImVec2(-1, 200))) {
-        ImPlot::SetupAxes("session", "price", ImPlotAxisFlags_AutoFit, ImPlotAxisFlags_AutoFit);
-        ImPlot::PlotLine("close", series.data(), static_cast<int>(series.size()));
-        ImPlot::EndPlot();
+    // Time-range selector.
+    static const char* rlabels[4] = {"1W", "1M", "3M", "1Y"};
+    static const char* ryahoo[4] = {"5d", "1mo", "3mo", "1y"};
+    for (int i = 0; i < 4; ++i) {
+        if (i) ImGui::SameLine();
+        const bool active = a.rangeIdx == i;
+        if (active) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.44f, 0.86f, 1));
+        if (ImGui::SmallButton(rlabels[i])) a.rangeIdx = i;
+        if (active) ImGui::PopStyleColor();
     }
+
+    // Fetch+cache OHLC bars for this symbol & range (one network call per key).
+    const std::string key = sym + "|" + ryahoo[a.rangeIdx];
+    auto it = a.barCache.find(key);
+    if (it == a.barCache.end())
+        it = a.barCache.emplace(key, a.market->bars(sym, ryahoo[a.rangeIdx])).first;
+    const std::vector<Bar>& bars = it->second;
+    plotCandles(bars);
 
     // Related stocks (graph neighbours).
     ImGui::TextColored(kMuted, "Related:");
@@ -332,7 +377,7 @@ void stockDetail(App& a) {
 
     // Historical best trade (subtle insight over the period).
     DynamicArray<double> d;
-    for (double x : series) d.push_back(x);
+    for (const auto& b : bars) d.push_back(b.close);
     const auto best = Backtest::bestSingle(d);
     if (best.profit() > 0)
         ImGui::TextColored(kMuted, "Best move this period: %+.1f%% (buy low, sell high)",

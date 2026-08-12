@@ -82,6 +82,42 @@ std::vector<Quote> LiveMarketData::universe() const {
     return out;
 }
 
+std::vector<Bar> LiveMarketData::bars(const std::string& symbol,
+                                      const std::string& range) const {
+    const std::string path =
+        "/v8/finance/chart/" + symbol + "?interval=1d&range=" + range;
+    const HttpResponse res = httpsGet("query1.finance.yahoo.com", path);
+    std::vector<Bar> out;
+    if (res.ok()) {
+        const json j = json::parse(res.body, nullptr, false);
+        if (!j.is_discarded() && j.contains("chart") && j["chart"].contains("result") &&
+            j["chart"]["result"].is_array() && !j["chart"]["result"].empty()) {
+            const json& r = j["chart"]["result"][0];
+            if (r.contains("timestamp") && r.contains("indicators") &&
+                r["indicators"].contains("quote") && r["indicators"]["quote"].is_array() &&
+                !r["indicators"]["quote"].empty()) {
+                const json& ts = r["timestamp"];
+                const json& q = r["indicators"]["quote"][0];
+                const std::size_t n = ts.size();
+                for (std::size_t i = 0; i < n; ++i) {
+                    if (!q["open"][i].is_number() || !q["close"][i].is_number() ||
+                        !q["high"][i].is_number() || !q["low"][i].is_number())
+                        continue;
+                    Bar b;
+                    b.time = ts[i].get<double>();
+                    b.open = q["open"][i].get<double>();
+                    b.high = q["high"][i].get<double>();
+                    b.low = q["low"][i].get<double>();
+                    b.close = q["close"][i].get<double>();
+                    out.push_back(b);
+                }
+            }
+        }
+    }
+    if (out.empty()) return fallback_.bars(symbol, range);  // synthetic
+    return out;
+}
+
 std::vector<double> LiveMarketData::candles(const std::string& symbol, int n) const {
     auto it = candleCache_.find(symbol);
     if (it == candleCache_.end()) {

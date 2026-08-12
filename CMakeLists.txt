@@ -142,6 +142,9 @@ target_link_libraries(papertrade PRIVATE pt_core imgui Threads::Threads)
 # MinGW/Windows sockets for the cpp-httplib Finnhub client used inside pt_core.
 if(WIN32)
   target_link_libraries(papertrade PRIVATE ws2_32)
+  # Static-link the MinGW runtime so the exe is portable — it runs on any
+  # Windows machine with no libstdc++/libgcc/libwinpthread DLLs to bundle.
+  target_link_options(papertrade PRIVATE -static -static-libgcc -static-libstdc++)
 endif()
 
 # ---------------------------------------------------------------------------

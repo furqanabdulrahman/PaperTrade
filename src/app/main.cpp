@@ -67,6 +67,11 @@ ImVec4 pnlColor(double v) { return v >= 0 ? kGreen : kRed; }
 const char* kStatePath = "data/state/portfolio.json";
 const char* kEquityPath = "data/state/equity.json";
 
+ImFont* gBig = nullptr;  // larger font for the instrument header
+static const char* kRangeLabels[7] = {"1D", "1W", "1M", "3M", "6M", "1Y", "5Y"};
+static const char* kRangeYahoo[7] = {"1d", "5d", "1mo", "3mo", "6mo", "1y", "5y"};
+static const char* kRangeInt[7] = {"5m", "60m", "1d", "1d", "1d", "1d", "1wk"};
+
 const char* nameOf(const std::string& sym) {
     for (const auto& c : universeList()) if (sym == c.symbol) return c.name;
     return "";
@@ -444,10 +449,10 @@ void drawStockChart(App& a, const std::vector<Bar>& bars, bool intraday) {
     const double padY = (vhi - vlo) * 0.10 + 1e-6;
 
     const float availY = ImGui::GetContentRegionAvail().y;
-    const float volH = 72.0f;
+    const float volH = availY > 420.0f ? 110.0f : 80.0f;
     float priceH = availY - volH - 12.0f;
-    if (priceH < 220.0f) priceH = 220.0f;
-    if (priceH > 360.0f) priceH = 360.0f;
+    if (priceH < 240.0f) priceH = 240.0f;
+    if (priceH > 1200.0f) priceH = 1200.0f;
 
     const ImU32 up = IM_COL32(38, 208, 124, 255), down = IM_COL32(246, 70, 93, 255);
     pushProChart();
@@ -618,30 +623,156 @@ void stockDetail(App& a) {
                            best.buyPrice != 0 ? best.profit() / best.buyPrice * 100 : 0);
 }
 
+// Compact, sortable, searchable instrument list for the left rail.
+void instrumentList(App& a) {
+    ImGui::SetNextItemWidth(-1);
+    ImGui::InputTextWithHint("##search", "Search symbol / company", a.search, sizeof(a.search));
+    ImGui::TextColored(kMuted, "%d instruments", static_cast<int>(a.symbols.size()));
+    ImGui::Spacing();
+
+    const std::string q = toLower(a.search);
+    std::vector<int> rows;
+    for (int i = 0; i < static_cast<int>(a.quotes.size()); ++i)
+        if (q.empty() || toLower(a.quotes[i].symbol).find(q) != std::string::npos ||
+            toLower(nameOf(a.quotes[i].symbol)).find(q) != std::string::npos)
+            rows.push_back(i);
+
+    const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_ScrollY |
+                                  ImGuiTableFlags_Sortable | ImGuiTableFlags_SizingStretchProp |
+                                  ImGuiTableFlags_BordersInnerH;
+    if (ImGui::BeginTable("wl", 3, flags, ImVec2(0, ImGui::GetContentRegionAvail().y))) {
+        ImGui::TableSetupColumn("Symbol", ImGuiTableColumnFlags_DefaultSort);
+        ImGui::TableSetupColumn("Last");
+        ImGui::TableSetupColumn("Chg%", ImGuiTableColumnFlags_PreferSortDescending);
+        ImGui::TableHeadersRow();
+
+        int col = 0; bool asc = true;
+        if (ImGuiTableSortSpecs* s = ImGui::TableGetSortSpecs())
+            if (s->SpecsCount > 0) { col = s->Specs[0].ColumnIndex; asc = s->Specs[0].SortDirection == ImGuiSortDirection_Ascending; }
+        DynamicArray<int> idx;
+        for (int r : rows) idx.push_back(r);
+        auto cmp = [&](const int& x, const int& y) {
+            const Quote& qx = a.quotes[x];
+            const Quote& qy = a.quotes[y];
+            bool less;
+            if (col == 1) less = qx.last < qy.last;
+            else if (col == 2) less = qx.pctChange < qy.pctChange;
+            else less = qx.symbol < qy.symbol;
+            return asc ? less : !less;
+        };
+        QuickSort<int> qs;
+        qs.sort(idx, cmp);
+
+        for (std::size_t k = 0; k < idx.size(); ++k) {
+            const Quote& qq = a.quotes[idx[k]];
+            ImGui::TableNextRow();
+            ImGui::TableSetColumnIndex(0);
+            if (ImGui::Selectable(qq.symbol.c_str(), a.selected == idx[k],
+                                  ImGuiSelectableFlags_SpanAllColumns))
+                a.select(qq.symbol);
+            ImGui::TableSetColumnIndex(1); ImGui::Text("%.2f", qq.last);
+            ImGui::TableSetColumnIndex(2); pctText(qq.pctChange);
+        }
+        ImGui::EndTable();
+    }
+}
+
+// Prominent instrument header: ticker, name, price, % change, watch toggle.
+void stockHeader(App& a) {
+    const std::string sym = a.selectedSymbol();
+    double last = a.priceOf(sym), pct = 0;
+    for (const auto& qt : a.quotes) if (qt.symbol == sym) { pct = qt.pctChange; break; }
+    const ImVec4 col = pct >= 0 ? kGreen : kRed;
+
+    if (gBig) ImGui::PushFont(gBig);
+    ImGui::Text("%s", sym.c_str());
+    if (gBig) ImGui::PopFont();
+    ImGui::SameLine(0, 14);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextColored(kMuted, "%s  ·  %s", nameOf(sym), sectorOf(sym));
+
+    const float bw = 130.0f;
+    ImGui::SameLine(ImGui::GetWindowWidth() - bw - 24.0f);
+    if (ImGui::Button(a.inWatch(sym) ? "In Watchlist" : "+ Watchlist", ImVec2(bw, 0)))
+        a.toggleWatch(sym);
+
+    if (gBig) ImGui::PushFont(gBig);
+    ImGui::Text("%.2f", last);
+    if (gBig) ImGui::PopFont();
+    ImGui::SameLine(0, 14);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextColored(col, "%+.2f%%  today", pct);
+}
+
+// Timeframe / indicator / zoom controls row.
+void chartControls(App& a) {
+    for (int i = 0; i < 7; ++i) {
+        if (i) ImGui::SameLine();
+        const bool active = a.rangeIdx == i;
+        if (active) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.44f, 0.86f, 1));
+        if (ImGui::SmallButton(kRangeLabels[i])) a.rangeIdx = i;
+        if (active) ImGui::PopStyleColor();
+    }
+    ImGui::SameLine(); ImGui::TextDisabled("  MA");
+    ImGui::SameLine(); ImGui::Checkbox("20", &a.ma20);
+    ImGui::SameLine(); ImGui::Checkbox("50", &a.ma50);
+    ImGui::SameLine(); ImGui::Checkbox("200", &a.ma200);
+    ImGui::SameLine(); ImGui::TextDisabled(" | ");
+    ImGui::SameLine(); if (ImGui::SmallButton("-")) zoomX(a.sxMin, a.sxMax, 1.30);
+    ImGui::SameLine(); if (ImGui::SmallButton("+")) zoomX(a.sxMin, a.sxMax, 0.77);
+    ImGui::SameLine(); if (ImGui::SmallButton("Fit")) a.chartRefit = true;
+    ImGui::SameLine(); ImGui::TextDisabled("scroll = zoom · drag = pan");
+}
+
 void tabMarkets(App& a) {
-    ImGui::BeginChild("mktscroll", ImVec2(0, 0), false);
-    ImGui::SetNextItemWidth(280);
-    ImGui::InputTextWithHint("##search", "Search symbol or company...", a.search, sizeof(a.search));
+    const float totalH = ImGui::GetContentRegionAvail().y;
+    const float stripH = 132.0f;                 // bottom movers strip
+    const float mainH = totalH - stripH - 8.0f;
+    const float leftW = 320.0f;
+
+    // ---- LEFT: watchlist / instrument list ----
+    ImGui::BeginChild("wl_panel", ImVec2(leftW, mainH), true);
+    instrumentList(a);
+    ImGui::EndChild();
+
     ImGui::SameLine();
-    ImGui::TextColored(kMuted, "%d companies", static_cast<int>(a.symbols.size()));
 
-    // Let the company board fill the vertical space, reserving room for the
-    // detail chart below (so big/maximized windows aren't left half-empty).
-    float boardH = ImGui::GetContentRegionAvail().y - 400.0f;
-    if (boardH < 220.0f) boardH = 220.0f;
-    if (boardH > 1000.0f) boardH = 1000.0f;
+    // ---- CENTER/RIGHT: selected instrument + large chart ----
+    ImGui::BeginChild("chart_panel", ImVec2(0, mainH), true);
+    stockHeader(a);
+    ImGui::Separator();
+    chartControls(a);
+    ImGui::Spacing();
 
-    ImGui::Columns(2, "mkt", true);
-    marketBoard(a, boardH);
+    const std::string sym = a.selectedSymbol();
+    const std::string key = sym + "|" + kRangeYahoo[a.rangeIdx] + "|" + kRangeInt[a.rangeIdx];
+    if (key != a.chartKey) { a.chartKey = key; a.chartRefit = true; }
+    auto it = a.barCache.find(key);
+    if (it == a.barCache.end())
+        it = a.barCache.emplace(key, a.market->bars(sym, kRangeYahoo[a.rangeIdx], kRangeInt[a.rangeIdx])).first;
+    drawStockChart(a, it->second, a.rangeIdx <= 1);
+    ImGui::EndChild();
+
+    // ---- BOTTOM STRIP: movers + related ----
+    ImGui::BeginChild("mv_strip", ImVec2(0, stripH), true);
+    ImGui::Columns(3, "mvcol", false);
+    ImGui::TextColored(kMuted, "TOP GAINERS");
+    moverList("g", topMovers(a.quotes, 4, true));
     ImGui::NextColumn();
-    ImGui::SeparatorText("Top Gainers");
-    moverList("gain", topMovers(a.quotes, 6, true));
-    ImGui::SeparatorText("Top Losers");
-    moverList("lose", topMovers(a.quotes, 6, false));
+    ImGui::TextColored(kMuted, "TOP LOSERS");
+    moverList("l", topMovers(a.quotes, 4, false));
+    ImGui::NextColumn();
+    ImGui::TextColored(kMuted, "RELATED TO %s", sym.c_str());
+    ImGui::Spacing();
+    const auto rel = a.graph.neighbors(sym);
+    if (rel.empty()) ImGui::TextDisabled("none");
+    for (std::size_t i = 0; i < rel.size() && i < 8; ++i) {
+        if (i && (i % 4) != 0) ImGui::SameLine();
+        ImGui::PushID(static_cast<int>(i));
+        if (ImGui::SmallButton(rel[i].c_str())) a.select(rel[i]);
+        ImGui::PopID();
+    }
     ImGui::Columns(1);
-
-    ImGui::SeparatorText("Details");
-    stockDetail(a);
     ImGui::EndChild();
 }
 
@@ -1099,6 +1230,7 @@ int main(int argc, char** argv) {
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = nullptr;
     io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 20.0f);
+    gBig = io.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 30.0f);  // instrument header
     ImGui::StyleColorsDark();
     applyTheme();
     ImGui_ImplGlfw_InitForOpenGL(window, true);

@@ -277,7 +277,7 @@ void symbolCombo(App& a) {
 }
 
 // ---- Markets ---------------------------------------------------------------
-void marketBoard(App& a) {
+void marketBoard(App& a, float height) {
     // Filter by search text (symbol or company name).
     const std::string q = toLower(a.search);
     std::vector<int> rows;
@@ -290,7 +290,7 @@ void marketBoard(App& a) {
     const ImGuiTableFlags flags = ImGuiTableFlags_RowBg | ImGuiTableFlags_Borders |
                                   ImGuiTableFlags_Sortable | ImGuiTableFlags_ScrollY |
                                   ImGuiTableFlags_SizingStretchProp;
-    if (ImGui::BeginTable("board", 5, flags, ImVec2(0, 180))) {
+    if (ImGui::BeginTable("board", 5, flags, ImVec2(0, height))) {
         ImGui::TableSetupColumn("Symbol", ImGuiTableColumnFlags_DefaultSort);
         ImGui::TableSetupColumn("Company");
         ImGui::TableSetupColumn("Last");
@@ -625,8 +625,14 @@ void tabMarkets(App& a) {
     ImGui::SameLine();
     ImGui::TextColored(kMuted, "%d companies", static_cast<int>(a.symbols.size()));
 
+    // Let the company board fill the vertical space, reserving room for the
+    // detail chart below (so big/maximized windows aren't left half-empty).
+    float boardH = ImGui::GetContentRegionAvail().y - 400.0f;
+    if (boardH < 220.0f) boardH = 220.0f;
+    if (boardH > 1000.0f) boardH = 1000.0f;
+
     ImGui::Columns(2, "mkt", true);
-    marketBoard(a);
+    marketBoard(a, boardH);
     ImGui::NextColumn();
     ImGui::SeparatorText("Top Gainers");
     moverList("gain", topMovers(a.quotes, 6, true));

@@ -48,6 +48,42 @@ bool savePortfolio(const Portfolio& pf, const std::string& path) {
     return static_cast<bool>(f);
 }
 
+bool saveEquityHistory(const std::vector<double>& times, const std::vector<double>& values,
+                       const std::string& path) {
+    json j;
+    j["t"] = times;
+    j["v"] = values;
+    try {
+        const std::filesystem::path p(path);
+        if (p.has_parent_path()) std::filesystem::create_directories(p.parent_path());
+    } catch (const std::exception&) {
+    }
+    std::ofstream f(path);
+    if (!f) return false;
+    f << j.dump();
+    return static_cast<bool>(f);
+}
+
+bool loadEquityHistory(std::vector<double>& times, std::vector<double>& values,
+                       const std::string& path) {
+    std::ifstream f(path);
+    if (!f) return false;
+    json j;
+    try {
+        f >> j;
+    } catch (const std::exception&) {
+        return false;
+    }
+    times.clear();
+    values.clear();
+    if (j.contains("t") && j.contains("v") && j["t"].is_array() && j["v"].is_array()) {
+        for (const auto& x : j["t"]) times.push_back(x.get<double>());
+        for (const auto& x : j["v"]) values.push_back(x.get<double>());
+    }
+    if (times.size() != values.size()) { times.clear(); values.clear(); return false; }
+    return true;
+}
+
 bool loadPortfolio(Portfolio& pf, const std::string& path) {
     std::ifstream f(path);
     if (!f) return false;

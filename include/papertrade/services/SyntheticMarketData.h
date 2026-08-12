@@ -76,6 +76,7 @@ public:
             b.close = close;
             b.high = (open > close ? open : close) * (1.0 + wig);
             b.low = (open < close ? open : close) * (1.0 - wig);
+            b.volume = 1.0e6 + static_cast<double>((s >> 20) & 0x3FFFFF);  // plausible volume
             out.push_back(b);
             prev = close;
         }

@@ -109,6 +109,8 @@ std::vector<Bar> LiveMarketData::bars(const std::string& symbol, const std::stri
                     b.high = q["high"][i].get<double>();
                     b.low = q["low"][i].get<double>();
                     b.close = q["close"][i].get<double>();
+                    if (q.contains("volume") && q["volume"][i].is_number())
+                        b.volume = q["volume"][i].get<double>();
                     out.push_back(b);
                 }
             }

@@ -22,6 +22,7 @@ struct Quote {
 struct Bar {
     double time = 0.0;
     double open = 0.0, high = 0.0, low = 0.0, close = 0.0;
+    double volume = 0.0;
 };
 
 class MarketDataService {

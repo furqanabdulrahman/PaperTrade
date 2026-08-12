@@ -25,6 +25,7 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <ctime>
 #include <cstdio>
@@ -64,6 +65,7 @@ ImVec4 pnlColor(double v) { return v >= 0 ? kGreen : kRed; }
 
 // Where per-user account state is saved between sessions (git-ignored).
 const char* kStatePath = "data/state/portfolio.json";
+const char* kEquityPath = "data/state/equity.json";
 
 const char* nameOf(const std::string& sym) {
     for (const auto& c : universeList()) if (sym == c.symbol) return c.name;
@@ -118,8 +120,12 @@ struct App {
     char search[64] = "";
     std::vector<std::string> watch;
     int rangeIdx = 2;  // 0=1D 1=1W 2=1M 3=1Y 4=5Y
+    bool showMA = true;
+    int maPeriod = 20;
+    int trackRangeIdx = 3;  // portfolio tracker window: 0=1D 1=1W 2=1M 3=All
     std::map<std::string, std::vector<Bar>> barCache;
-    std::vector<double> eqTimes, eqVals;  // live portfolio-value history
+    std::vector<double> eqTimes, eqVals;  // live + persisted portfolio-value history
+    double lastEqSave = 0.0;
 
     std::mutex mtx;
     std::vector<Quote> incoming;
@@ -136,11 +142,13 @@ struct App {
         for (int i = 0; i < static_cast<int>(symbols.size()); ++i)
             symIndex.insert(symbols[i], i);
         loadPortfolio(accounts.portfolio(user), kStatePath);  // resume saved account
+        loadEquityHistory(eqTimes, eqVals, kEquityPath);      // resume value history
     }
     ~App() {
         running.store(false);
         if (refreshThread.joinable()) refreshThread.join();
         saveState();  // final save on exit
+        saveEquityHistory(eqTimes, eqVals, kEquityPath);
     }
 
     void saveState() { savePortfolio(accounts.portfolio(user), kStatePath); }
@@ -185,9 +193,14 @@ struct App {
         const double eq = pf.marketValue([this](const std::string& s) { return priceOf(s); });
         eqTimes.push_back(static_cast<double>(std::time(nullptr)));
         eqVals.push_back(eq);
-        if (eqVals.size() > 720) {  // keep a rolling window
+        while (eqVals.size() > 8000) {  // bounded rolling history
             eqVals.erase(eqVals.begin());
             eqTimes.erase(eqTimes.begin());
+        }
+        const double t = glfwGetTime();
+        if (t - lastEqSave > 20.0) {  // persist periodically (not every tick)
+            saveEquityHistory(eqTimes, eqVals, kEquityPath);
+            lastEqSave = t;
         }
     }
 
@@ -367,16 +380,31 @@ void glowLine(const char* id, const double* xs, const double* ys, int n, ImVec4 
     ImPlot::PlotLine(id, xs, ys, n);
 }
 
-// Green/red candlesticks with a moving-average overlay and a current-price tag.
-void plotCandles(const std::vector<Bar>& bars, const char* fmt) {
+// Full-featured candlestick chart: volume bars, a moving-average overlay, a
+// current-price tag, and an interactive crosshair that reads out OHLC/volume/MA
+// for the bar under the mouse (like TradingView / Webull).
+void plotCandles(const std::vector<Bar>& bars, const char* fmt, int maPeriod, bool showMA) {
     if (bars.empty()) { ImGui::TextColored(kMuted, "No chart data."); return; }
-    double ymin = 1e18, ymax = -1e18;
-    for (const auto& b : bars) { if (b.low < ymin) ymin = b.low; if (b.high > ymax) ymax = b.high; }
-    const double pad = (ymax - ymin) * 0.08 + 1e-6;
+    double ymin = 1e18, ymax = -1e18, vmax = 0;
+    for (const auto& b : bars) {
+        if (b.low < ymin) ymin = b.low;
+        if (b.high > ymax) ymax = b.high;
+        if (b.volume > vmax) vmax = b.volume;
+    }
+    const double pad = (ymax - ymin) * 0.10 + 1e-6;
     const double w = bars.size() > 1 ? (bars[1].time - bars[0].time) * 0.34 : 20000.0;
 
+    // Moving average aligned to bars (NaN before it has enough data).
+    const int period = std::max(2, std::min(maPeriod, static_cast<int>(bars.size()) / 2));
+    std::vector<double> ma(bars.size(), std::nan(""));
+    for (int i = period - 1; i < static_cast<int>(bars.size()); ++i) {
+        double s = 0;
+        for (int k = 0; k < period; ++k) s += bars[i - k].close;
+        ma[i] = s / period;
+    }
+
     pushProChart();
-    if (ImPlot::BeginPlot("##candles", ImVec2(-1, 260), ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText)) {
+    if (ImPlot::BeginPlot("##candles", ImVec2(-1, 300), ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText)) {
         ImPlot::SetupAxes(nullptr, "price", ImPlotAxisFlags_NoGridLines, 0);
         ImPlot::SetupAxisLimits(ImAxis_X1, bars.front().time - w * 2, bars.back().time + w * 2, ImPlotCond_Always);
         ImPlot::SetupAxisLimits(ImAxis_Y1, ymin - pad, ymax + pad, ImPlotCond_Always);
@@ -384,43 +412,77 @@ void plotCandles(const std::vector<Bar>& bars, const char* fmt) {
         for (const auto& b : bars) ts.push_back(b.time);
         setupTimeTicks(ts, fmt, 6);
         ImDrawList* dl = ImPlot::GetPlotDrawList();
+        const ImVec2 pp = ImPlot::GetPlotPos(), ps = ImPlot::GetPlotSize();
         const ImU32 up = IM_COL32(38, 208, 124, 255), down = IM_COL32(246, 70, 93, 255);
+
+        // Volume histogram along the bottom band.
+        const float bottom = pp.y + ps.y, volBand = ps.y * 0.20f;
+        if (vmax > 0) {
+            for (const auto& b : bars) {
+                const float cx = ImPlot::PlotToPixels(b.time, 0.0).x;
+                const float hw = ImPlot::PlotToPixels(b.time + w, 0.0).x - cx;
+                const float hgt = static_cast<float>(b.volume / vmax) * volBand;
+                const ImU32 vc = b.close >= b.open ? IM_COL32(38, 208, 124, 60) : IM_COL32(246, 70, 93, 60);
+                dl->AddRectFilled(ImVec2(cx - hw, bottom - hgt), ImVec2(cx + hw, bottom), vc);
+            }
+        }
+        // Candles.
         for (const auto& b : bars) {
             const ImU32 col = b.close >= b.open ? up : down;
             const ImVec2 wl = ImPlot::PlotToPixels(b.time, b.low);
             const ImVec2 wh = ImPlot::PlotToPixels(b.time, b.high);
             const ImVec2 bl = ImPlot::PlotToPixels(b.time - w, b.open);
             const ImVec2 br = ImPlot::PlotToPixels(b.time + w, b.close);
-            dl->AddLine(wl, wh, col, 1.2f);  // high-low wick
+            dl->AddLine(wl, wh, col, 1.2f);
             float top = bl.y < br.y ? bl.y : br.y;
             float bot = bl.y < br.y ? br.y : bl.y;
-            if (bot - top < 1.5f) bot = top + 1.5f;  // keep flat days visible
+            if (bot - top < 1.5f) bot = top + 1.5f;
             dl->AddRectFilled(ImVec2(bl.x, top), ImVec2(br.x, bot), col, 1.0f);
         }
         // Moving-average overlay (glowing gold line).
-        const int period = std::max(2, std::min(20, static_cast<int>(bars.size()) / 4));
-        if (static_cast<int>(bars.size()) > period) {
+        if (showMA && static_cast<int>(bars.size()) > period) {
             std::vector<double> mx, my;
-            for (int i = period - 1; i < static_cast<int>(bars.size()); ++i) {
-                double s = 0;
-                for (int k = 0; k < period; ++k) s += bars[i - k].close;
-                mx.push_back(bars[i].time);
-                my.push_back(s / period);
-            }
-            glowLine("ma", mx.data(), my.data(), static_cast<int>(mx.size()),
-                     ImVec4(0.96f, 0.80f, 0.35f, 1));
+            for (int i = period - 1; i < static_cast<int>(bars.size()); ++i) { mx.push_back(bars[i].time); my.push_back(ma[i]); }
+            glowLine("ma", mx.data(), my.data(), static_cast<int>(mx.size()), ImVec4(0.96f, 0.80f, 0.35f, 1));
+            char mbuf[48];
+            std::snprintf(mbuf, sizeof(mbuf), "MA(%d)  %.2f", period, ma.back());
+            dl->AddText(ImVec2(pp.x + 10, pp.y + 8), IM_COL32(245, 204, 89, 255), mbuf);
         }
-        // Current-price line + price tag on the right edge.
-        const ImVec2 pp = ImPlot::GetPlotPos(), ps = ImPlot::GetPlotSize();
+        // Current-price line + right-edge tag.
         const float y = ImPlot::PlotToPixels(bars.back().time, bars.back().close).y;
         const ImU32 lc = bars.back().close >= bars.back().open ? up : down;
         dl->AddLine(ImVec2(pp.x, y), ImVec2(pp.x + ps.x, y), IM_COL32(200, 210, 225, 45), 1.0f);
         char buf[24];
         std::snprintf(buf, sizeof(buf), "%.2f", bars.back().close);
         const ImVec2 tsz = ImGui::CalcTextSize(buf);
-        dl->AddRectFilled(ImVec2(pp.x + ps.x - tsz.x - 12, y - 10),
-                          ImVec2(pp.x + ps.x - 2, y + 10), lc, 3.0f);
+        dl->AddRectFilled(ImVec2(pp.x + ps.x - tsz.x - 12, y - 10), ImVec2(pp.x + ps.x - 2, y + 10), lc, 3.0f);
         dl->AddText(ImVec2(pp.x + ps.x - tsz.x - 7, y - 8), IM_COL32(8, 12, 16, 255), buf);
+
+        // Interactive crosshair: snap to the nearest bar and read it out.
+        if (ImPlot::IsPlotHovered()) {
+            const ImPlotPoint m = ImPlot::GetPlotMousePos();
+            int idx = 0;
+            double best = 1e30;
+            for (int i = 0; i < static_cast<int>(bars.size()); ++i) {
+                const double d = std::fabs(bars[i].time - m.x);
+                if (d < best) { best = d; idx = i; }
+            }
+            const float gx = ImPlot::PlotToPixels(bars[idx].time, 0.0).x;
+            dl->AddLine(ImVec2(gx, pp.y), ImVec2(gx, pp.y + ps.y), IM_COL32(200, 210, 225, 55), 1.0f);
+            const Bar& bb = bars[idx];
+            ImGui::BeginTooltip();
+            ImGui::TextUnformatted(formatEpoch(bb.time, "%a, %b %d %Y").c_str());
+            ImGui::Separator();
+            ImGui::Text("O  %.2f", bb.open);
+            ImGui::Text("H  %.2f", bb.high);
+            ImGui::Text("L  %.2f", bb.low);
+            const ImVec4 cc = bb.close >= bb.open ? kGreen : kRed;
+            ImGui::TextColored(cc, "C  %.2f", bb.close);
+            if (bb.volume > 0) ImGui::Text("Vol  %.0f", bb.volume);
+            if (!std::isnan(ma[idx]))
+                ImGui::TextColored(ImVec4(0.96f, 0.80f, 0.35f, 1), "MA(%d)  %.2f", period, ma[idx]);
+            ImGui::EndTooltip();
+        }
         ImPlot::EndPlot();
     }
     popProChart();
@@ -446,6 +508,15 @@ void stockDetail(App& a) {
         if (ImGui::SmallButton(rlabels[i])) a.rangeIdx = i;
         if (active) ImGui::PopStyleColor();
     }
+    ImGui::SameLine();
+    ImGui::TextDisabled("|");
+    ImGui::SameLine();
+    ImGui::Checkbox("MA", &a.showMA);
+    if (a.showMA) {
+        ImGui::SameLine();
+        ImGui::SetNextItemWidth(120);
+        ImGui::SliderInt("##maperiod", &a.maPeriod, 3, 50, "MA %d");
+    }
 
     // Fetch+cache OHLC bars for this symbol & range (one network call per key).
     const std::string key =
@@ -454,7 +525,7 @@ void stockDetail(App& a) {
     if (it == a.barCache.end())
         it = a.barCache.emplace(key, a.market->bars(sym, rrange[a.rangeIdx], rint[a.rangeIdx])).first;
     const std::vector<Bar>& bars = it->second;
-    plotCandles(bars, rfmt[a.rangeIdx]);
+    plotCandles(bars, rfmt[a.rangeIdx], a.maPeriod, a.showMA);
 
     // Related stocks (graph neighbours).
     ImGui::TextColored(kMuted, "Related:");
@@ -701,38 +772,54 @@ void watchlistPanel(App& a) {
     }
 }
 
-// Live portfolio-value line — green when up on the session, red when down.
+// Live + historical portfolio-value line with 1D/1W/1M/All windows.
 void portfolioTracker(App& a) {
+    static const char* tl[4] = {"1D", "1W", "1M", "All"};
+    static const double win[4] = {86400.0, 604800.0, 2592000.0, 1e18};
+    static const char* xf[4] = {"%H:%M", "%a", "%b %d", "%b %d"};
+    for (int i = 0; i < 4; ++i) {
+        if (i) ImGui::SameLine();
+        const bool act = a.trackRangeIdx == i;
+        if (act) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.44f, 0.86f, 1));
+        if (ImGui::SmallButton(tl[i])) a.trackRangeIdx = i;
+        if (act) ImGui::PopStyleColor();
+    }
     if (a.eqVals.size() < 2) {
-        ImGui::TextColored(kMuted, "Live tracker fills in as prices update — buy some stock to watch it move.");
+        ImGui::TextColored(kMuted, "Tracker fills in as prices update — history is saved and restored across sessions.");
         return;
     }
-    const double first = a.eqVals.front(), last = a.eqVals.back();
+    // Filter the saved history to the selected window.
+    const double now = static_cast<double>(std::time(nullptr));
+    const double cutoff = now - win[a.trackRangeIdx];
+    std::vector<double> ft, fv;
+    for (std::size_t i = 0; i < a.eqTimes.size(); ++i)
+        if (a.eqTimes[i] >= cutoff) { ft.push_back(a.eqTimes[i]); fv.push_back(a.eqVals[i]); }
+    if (ft.size() < 2) { ft = a.eqTimes; fv = a.eqVals; }  // window too short → show all
+
+    const double first = fv.front(), last = fv.back();
     const bool up = last >= first;
     const ImVec4 col = up ? kGreen : kRed;
     const double chg = last - first, pct = first != 0 ? chg / first * 100 : 0;
     ImGui::Text("Portfolio value  %.2f", last);
     ImGui::SameLine();
-    ImGui::TextColored(col, "   %+.2f (%+.2f%%) this session", chg, pct);
+    ImGui::TextColored(col, "   %+.2f (%+.2f%%)", chg, pct);
     pushProChart();
     if (ImPlot::BeginPlot("##track", ImVec2(-1, 240), ImPlotFlags_NoLegend | ImPlotFlags_NoMouseText)) {
         ImPlot::SetupAxes(nullptr, "value", ImPlotAxisFlags_NoGridLines, 0);
         double lo = 1e18, hi = -1e18;
-        for (double v : a.eqVals) { if (v < lo) lo = v; if (v > hi) hi = v; }
+        for (double v : fv) { if (v < lo) lo = v; if (v > hi) hi = v; }
         const double vp = (hi - lo) * 0.18 + 1.0;
-        ImPlot::SetupAxisLimits(ImAxis_X1, a.eqTimes.front(), a.eqTimes.back(), ImPlotCond_Always);
+        ImPlot::SetupAxisLimits(ImAxis_X1, ft.front(), ft.back(), ImPlotCond_Always);
         ImPlot::SetupAxisLimits(ImAxis_Y1, lo - vp, hi + vp, ImPlotCond_Always);
-        setupTimeTicks(a.eqTimes, "%H:%M", 6);
-        const int n = static_cast<int>(a.eqVals.size());
-        // Neon area fill down to the axis floor.
+        setupTimeTicks(ft, xf[a.trackRangeIdx], 6);
+        const int n = static_cast<int>(fv.size());
         ImPlot::SetNextFillStyle(col, 0.12f);
-        ImPlot::PlotShaded("value", a.eqTimes.data(), a.eqVals.data(), n, lo - vp);
-        // Dashed session-start baseline so up/down reads instantly.
+        ImPlot::PlotShaded("value", ft.data(), fv.data(), n, lo - vp);
         ImDrawList* dl = ImPlot::GetPlotDrawList();
         const ImVec2 pp = ImPlot::GetPlotPos(), ps = ImPlot::GetPlotSize();
-        const float by = ImPlot::PlotToPixels(a.eqTimes.front(), first).y;
+        const float by = ImPlot::PlotToPixels(ft.front(), first).y;
         dl->AddLine(ImVec2(pp.x, by), ImVec2(pp.x + ps.x, by), IM_COL32(150, 160, 175, 55), 1.0f);
-        glowLine("value", a.eqTimes.data(), a.eqVals.data(), n, col);
+        glowLine("value", ft.data(), fv.data(), n, col);
         ImPlot::EndPlot();
     }
     popProChart();

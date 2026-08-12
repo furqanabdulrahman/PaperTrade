@@ -82,10 +82,10 @@ std::vector<Quote> LiveMarketData::universe() const {
     return out;
 }
 
-std::vector<Bar> LiveMarketData::bars(const std::string& symbol,
-                                      const std::string& range) const {
+std::vector<Bar> LiveMarketData::bars(const std::string& symbol, const std::string& range,
+                                      const std::string& interval) const {
     const std::string path =
-        "/v8/finance/chart/" + symbol + "?interval=1d&range=" + range;
+        "/v8/finance/chart/" + symbol + "?interval=" + interval + "&range=" + range;
     const HttpResponse res = httpsGet("query1.finance.yahoo.com", path);
     std::vector<Bar> out;
     if (res.ok()) {
@@ -114,7 +114,7 @@ std::vector<Bar> LiveMarketData::bars(const std::string& symbol,
             }
         }
     }
-    if (out.empty()) return fallback_.bars(symbol, range);  // synthetic
+    if (out.empty()) return fallback_.bars(symbol, range, interval);  // synthetic
     return out;
 }
 

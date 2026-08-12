@@ -78,9 +78,9 @@ std::vector<double> FinnhubClient::candles(const std::string& symbol, int n) con
     return fallback_.candles(symbol, n);
 }
 
-std::vector<Bar> FinnhubClient::bars(const std::string& symbol,
-                                     const std::string& range) const {
-    return fallback_.bars(symbol, range);  // real OHLC from Yahoo
+std::vector<Bar> FinnhubClient::bars(const std::string& symbol, const std::string& range,
+                                     const std::string& interval) const {
+    return fallback_.bars(symbol, range, interval);  // real OHLC from Yahoo
 }
 
 }  // namespace papertrade

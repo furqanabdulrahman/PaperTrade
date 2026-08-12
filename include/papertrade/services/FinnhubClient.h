@@ -24,7 +24,8 @@ public:
     std::vector<Quote> universe() const override;
     bool quote(const std::string& symbol, Quote& out) const override;
     std::vector<double> candles(const std::string& symbol, int n) const override;
-    std::vector<Bar> bars(const std::string& symbol, const std::string& range) const override;
+    std::vector<Bar> bars(const std::string& symbol, const std::string& range,
+                          const std::string& interval) const override;
     const char* sourceName() const override;
 
     // True only when built with SSL support and a non-empty key.

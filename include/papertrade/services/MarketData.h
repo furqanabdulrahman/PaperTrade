@@ -43,12 +43,13 @@ public:
     // Recent closing prices for one symbol, oldest first (up to `n`).
     virtual std::vector<double> candles(const std::string& symbol, int n) const = 0;
 
-    // OHLC candlesticks for a time range ("5d", "1mo", "3mo", "1y"), oldest
-    // first. Default builds flat bars from candles(); providers with real OHLC
-    // override this.
-    virtual std::vector<Bar> bars(const std::string& symbol,
-                                  const std::string& range) const {
-        const int n = range == "5d" ? 5 : range == "1mo" ? 22 : range == "3mo" ? 66 : 252;
+    // OHLC candlesticks for a range ("1d","5d","1mo","1y","5y") at a given bar
+    // interval ("15m","1d","1wk","1mo"), oldest first. Default builds flat bars
+    // from candles(); providers with real OHLC override this.
+    virtual std::vector<Bar> bars(const std::string& symbol, const std::string& range,
+                                  const std::string& /*interval*/) const {
+        const int n = range == "1d" ? 26 : range == "5d" ? 5 : range == "1mo" ? 22
+                      : range == "1y" ? 52 : 60;
         std::vector<double> c = candles(symbol, n);
         std::vector<Bar> out;
         for (std::size_t i = 0; i < c.size(); ++i)

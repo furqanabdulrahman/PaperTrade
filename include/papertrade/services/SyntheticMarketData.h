@@ -54,8 +54,12 @@ public:
         return out;
     }
 
-    std::vector<Bar> bars(const std::string& symbol, const std::string& range) const override {
-        const int n = range == "5d" ? 5 : range == "1mo" ? 22 : range == "3mo" ? 66 : 252;
+    std::vector<Bar> bars(const std::string& symbol, const std::string& range,
+                          const std::string& /*interval*/) const override {
+        const int n = range == "1d" ? 26 : range == "5d" ? 5 : range == "1mo" ? 22
+                      : range == "1y" ? 52 : 60;
+        const double step = range == "1d" ? 900.0 : range == "5d" ? 86400.0
+                            : range == "1mo" ? 86400.0 : range == "1y" ? 604800.0 : 2592000.0;
         std::vector<double> closes = candles(symbol, n);
         std::vector<Bar> out;
         const double now = static_cast<double>(std::time(nullptr));
@@ -67,7 +71,7 @@ public:
             s = s * 6364136223846793005ULL + 1442695040888963407ULL;
             const double wig = (((s >> 33) & 0xFFFF) / 65535.0) * 0.015 + 0.003;
             Bar b;
-            b.time = now - static_cast<double>(closes.size() - 1 - i) * 86400.0;
+            b.time = now - static_cast<double>(closes.size() - 1 - i) * step;
             b.open = open;
             b.close = close;
             b.high = (open > close ? open : close) * (1.0 + wig);

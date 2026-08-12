@@ -21,10 +21,12 @@
 #include "implot.h"
 #include <GLFW/glfw3.h>
 
+#include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <chrono>
 #include <cstdint>
+#include <ctime>
 #include <cstdio>
 #include <cstring>
 #include <map>
@@ -115,8 +117,9 @@ struct App {
     std::vector<std::string> events;
     char search[64] = "";
     std::vector<std::string> watch;
-    int rangeIdx = 2;  // 0=1W 1=1M 2=3M 3=1Y
+    int rangeIdx = 2;  // 0=1D 1=1W 2=1M 3=1Y 4=5Y
     std::map<std::string, std::vector<Bar>> barCache;
+    std::vector<double> eqTimes, eqVals;  // live portfolio-value history
 
     std::mutex mtx;
     std::vector<Quote> incoming;
@@ -177,6 +180,15 @@ struct App {
             events.insert(events.begin(), b);
         }
         if (!filled.empty()) saveState();  // persist auto-executed fills
+
+        // Sample live portfolio value for the tracker chart.
+        const double eq = pf.marketValue([this](const std::string& s) { return priceOf(s); });
+        eqTimes.push_back(static_cast<double>(std::time(nullptr)));
+        eqVals.push_back(eq);
+        if (eqVals.size() > 720) {  // keep a rolling window
+            eqVals.erase(eqVals.begin());
+            eqTimes.erase(eqTimes.begin());
+        }
     }
 
     double priceOf(const std::string& sym) const {
@@ -305,8 +317,37 @@ void marketBoard(App& a) {
     }
 }
 
-// Green/red candlesticks with a real date axis, drawn on the plot's draw list.
-void plotCandles(const std::vector<Bar>& bars) {
+// Format a unix timestamp with strftime (e.g. "%a" -> Mon, "%b" -> Jan).
+std::string formatEpoch(double t, const char* fmt) {
+    std::time_t tt = static_cast<std::time_t>(t);
+    std::tm* tm = std::localtime(&tt);
+    char buf[32] = {0};
+    if (tm) std::strftime(buf, sizeof(buf), fmt, tm);
+    return buf;
+}
+
+// Put clean, human-readable ticks on the X (time) axis: weekday names, month
+// names, years, etc. — instead of raw numeric dates.
+void setupTimeTicks(const std::vector<double>& times, const char* fmt, int maxTicks) {
+    if (times.empty()) return;
+    const int n = static_cast<int>(times.size());
+    const int count = std::min(maxTicks, n);
+    static std::vector<double> pos;
+    static std::vector<std::string> labs;
+    static std::vector<const char*> cptr;
+    pos.clear(); labs.clear(); cptr.clear();
+    for (int i = 0; i < count; ++i) {
+        const int idx = count == 1 ? 0 : i * (n - 1) / (count - 1);
+        pos.push_back(times[idx]);
+        labs.push_back(formatEpoch(times[idx], fmt));
+    }
+    for (const auto& s : labs) cptr.push_back(s.c_str());
+    ImPlot::SetupAxisTicks(ImAxis_X1, pos.data(), static_cast<int>(pos.size()), cptr.data());
+}
+
+// Green/red candlesticks, drawn on the plot's draw list. `fmt` controls the
+// X-axis label style for the selected range.
+void plotCandles(const std::vector<Bar>& bars, const char* fmt) {
     if (bars.empty()) { ImGui::TextColored(kMuted, "No chart data."); return; }
     double ymin = 1e18, ymax = -1e18;
     for (const auto& b : bars) { if (b.low < ymin) ymin = b.low; if (b.high > ymax) ymax = b.high; }
@@ -315,9 +356,11 @@ void plotCandles(const std::vector<Bar>& bars) {
 
     if (ImPlot::BeginPlot("##candles", ImVec2(-1, 250), ImPlotFlags_NoLegend)) {
         ImPlot::SetupAxes(nullptr, "price", 0, 0);
-        ImPlot::SetupAxisScale(ImAxis_X1, ImPlotScale_Time);  // real dates on X
         ImPlot::SetupAxisLimits(ImAxis_X1, bars.front().time - w * 2, bars.back().time + w * 2, ImPlotCond_Always);
         ImPlot::SetupAxisLimits(ImAxis_Y1, ymin - pad, ymax + pad, ImPlotCond_Always);
+        std::vector<double> ts;
+        for (const auto& b : bars) ts.push_back(b.time);
+        setupTimeTicks(ts, fmt, 6);
         ImDrawList* dl = ImPlot::GetPlotDrawList();
         const ImU32 up = IM_COL32(62, 207, 142, 255), down = IM_COL32(230, 90, 90, 255);
         for (const auto& b : bars) {
@@ -344,10 +387,12 @@ void stockDetail(App& a) {
     ImGui::SameLine();
     ImGui::Text("   %.2f", a.priceOf(sym));
 
-    // Time-range selector.
-    static const char* rlabels[4] = {"1W", "1M", "3M", "1Y"};
-    static const char* ryahoo[4] = {"5d", "1mo", "3mo", "1y"};
-    for (int i = 0; i < 4; ++i) {
+    // Time-range selector: 1D / 1W / 1M / 1Y / 5Y.
+    static const char* rlabels[5] = {"1D", "1W", "1M", "1Y", "5Y"};
+    static const char* rrange[5] = {"1d", "5d", "1mo", "1y", "5y"};
+    static const char* rint[5] = {"15m", "1d", "1d", "1wk", "1mo"};
+    static const char* rfmt[5] = {"%H:%M", "%a", "%b %d", "%b", "%Y"};
+    for (int i = 0; i < 5; ++i) {
         if (i) ImGui::SameLine();
         const bool active = a.rangeIdx == i;
         if (active) ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.44f, 0.86f, 1));
@@ -356,12 +401,13 @@ void stockDetail(App& a) {
     }
 
     // Fetch+cache OHLC bars for this symbol & range (one network call per key).
-    const std::string key = sym + "|" + ryahoo[a.rangeIdx];
+    const std::string key =
+        sym + "|" + rrange[a.rangeIdx] + "|" + rint[a.rangeIdx];
     auto it = a.barCache.find(key);
     if (it == a.barCache.end())
-        it = a.barCache.emplace(key, a.market->bars(sym, ryahoo[a.rangeIdx])).first;
+        it = a.barCache.emplace(key, a.market->bars(sym, rrange[a.rangeIdx], rint[a.rangeIdx])).first;
     const std::vector<Bar>& bars = it->second;
-    plotCandles(bars);
+    plotCandles(bars, rfmt[a.rangeIdx]);
 
     // Related stocks (graph neighbours).
     ImGui::TextColored(kMuted, "Related:");
@@ -606,7 +652,36 @@ void watchlistPanel(App& a) {
     }
 }
 
+// Live portfolio-value line — green when up on the session, red when down.
+void portfolioTracker(App& a) {
+    if (a.eqVals.size() < 2) {
+        ImGui::TextColored(kMuted, "Live tracker fills in as prices update — buy some stock to watch it move.");
+        return;
+    }
+    const double first = a.eqVals.front(), last = a.eqVals.back();
+    const bool up = last >= first;
+    const ImVec4 col = up ? kGreen : kRed;
+    const double chg = last - first, pct = first != 0 ? chg / first * 100 : 0;
+    ImGui::Text("Portfolio value  %.2f", last);
+    ImGui::SameLine();
+    ImGui::TextColored(col, "   %+.2f (%+.2f%%) this session", chg, pct);
+    if (ImPlot::BeginPlot("##track", ImVec2(-1, 230), ImPlotFlags_NoLegend)) {
+        ImPlot::SetupAxes(nullptr, "value", 0, ImPlotAxisFlags_AutoFit);
+        ImPlot::SetupAxisLimits(ImAxis_X1, a.eqTimes.front(), a.eqTimes.back(), ImPlotCond_Always);
+        setupTimeTicks(a.eqTimes, "%H:%M", 6);
+        const int n = static_cast<int>(a.eqVals.size());
+        ImPlot::SetNextFillStyle(col, 0.12f);
+        ImPlot::PlotShaded("value", a.eqTimes.data(), a.eqVals.data(), n, first);
+        ImPlot::SetNextLineStyle(col, 2.2f);
+        ImPlot::PlotLine("value", a.eqTimes.data(), a.eqVals.data(), n);
+        ImPlot::EndPlot();
+    }
+}
+
 void tabPortfolio(App& a) {
+    ImGui::BeginChild("pfscroll", ImVec2(0, 0), false);
+    ImGui::SeparatorText("Live portfolio value");
+    portfolioTracker(a);
     ImGui::SeparatorText("Positions");
     positionsTable(a);
     ImGui::Columns(2, "pf", true);
@@ -618,6 +693,7 @@ void tabPortfolio(App& a) {
     ImGui::Columns(1);
     ImGui::SeparatorText("Recently viewed");
     recentlyViewed(a);
+    ImGui::EndChild();
 }
 
 // ---- chrome ----------------------------------------------------------------
